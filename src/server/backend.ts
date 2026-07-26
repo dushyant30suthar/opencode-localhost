@@ -36,9 +36,6 @@ export interface Backend {
   /** Stops a server we started. Never touches one we did not spawn. */
   stop(): Promise<boolean>
 
-  /** Whether the user wants it started without being asked. */
-  autostart(): Promise<boolean>
-
   baseURL(): string
   apiKey(): string | undefined
 }

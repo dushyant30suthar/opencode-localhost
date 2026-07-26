@@ -27,8 +27,6 @@ const TEMPLATE = `# llama-server settings for opencode-localhost.
 #   port        llama-server listen port
 #   models-max  how many models may sit in VRAM at once. 1 swaps instead of stacking
 #   api-key     required by the server when set. leave empty for localhost-only
-#   autostart   start llama-server automatically when opencode launches.
-#               off = it only ever starts when you ask it to, from /localhost
 
 [server]
 bin =
@@ -37,7 +35,6 @@ host = 127.0.0.1
 port = 9337
 models-max = 1
 api-key =
-autostart = on
 `
 
 export type ServerSettings = {
@@ -47,7 +44,6 @@ export type ServerSettings = {
   port: number
   modelsMax: number
   apiKey: string
-  autostart: boolean
 }
 
 const DEFAULTS: ServerSettings = {
@@ -57,7 +53,6 @@ const DEFAULTS: ServerSettings = {
   port: 9337,
   modelsMax: 1,
   apiKey: "",
-  autostart: true,
 }
 
 function number(value: string | undefined, fallback: number) {
@@ -83,17 +78,16 @@ export async function load(): Promise<ServerSettings> {
     port: number(raw["port"], DEFAULTS.port),
     modelsMax: number(raw["models-max"], DEFAULTS.modelsMax),
     apiKey: (raw["api-key"] ?? "").trim(),
-    autostart: !/^(off|false|0|no)$/i.test((raw["autostart"] ?? "on").trim()),
   }
 }
 
 /** Writes one key back, preserving comments and everything else in the file. */
-export async function update(key: "bin" | "models-dir" | "autostart", value: string): Promise<void> {
+export async function update(key: "bin" | "models-dir", value: string): Promise<void> {
   const text = await fs.readFile(FILE, "utf8").catch(() => TEMPLATE)
   const doc = Ini.parse(text)
   const section = Ini.find(doc, "server")
   if (!section) return
-  Ini.set(section, key, key === "autostart" ? value : collapseHome(value))
+  Ini.set(section, key, collapseHome(value))
   await fs.mkdir(path.dirname(FILE), { recursive: true }).catch(() => {})
   await fs.writeFile(FILE, Ini.serialize(doc)).catch(() => {})
 }

@@ -219,7 +219,6 @@ export function create(): Backend {
     models,
     start,
     stop,
-    autostart: async () => (await config()).autostart,
     baseURL,
     apiKey: () => settings?.apiKey || undefined,
   }

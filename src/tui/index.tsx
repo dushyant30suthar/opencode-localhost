@@ -18,9 +18,11 @@ import { openSetup } from "./setup.tsx"
  * Hardware and provider are fixed and cannot shrink — without that the row
  * collapses under its own content and the sections overprint each other.
  *
- * MODEL takes whatever is left rather than a fixed width: model ids carry a
- * publisher prefix ("lmstudio-community/Qwen3.6-35B-A3B-GGUF") and a fixed
- * column truncated exactly the part that identifies which model is loaded.
+ * MODEL takes whatever is left rather than a fixed width, and wraps: model ids
+ * carry a publisher prefix ("lmstudio-community/Qwen3.6-35B-A3B-GGUF"), which a
+ * fixed column truncated at exactly the identifying part. The strip keeps the
+ * prompt's 75-column max so it stays centred with everything else on the home
+ * screen — full width made it hug the left edge while the prompt stayed centred.
  */
 const HARDWARE_WIDTH = 30
 const PROVIDER_WIDTH = 18
@@ -86,7 +88,7 @@ function HomePanel(props: { api: any }) {
   const data = usePanelData(registered(props.api))
   useAutoReload(props.api, data)
   return (
-    <box width="100%" flexDirection="row" flexShrink={0} paddingTop={1}>
+    <box width="100%" maxWidth={75} flexDirection="row" flexShrink={0} paddingTop={1}>
       <box width={HARDWARE_WIDTH} flexShrink={0} flexDirection="column">
         <Hardware theme={theme()} data={data()} />
       </box>

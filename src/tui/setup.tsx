@@ -125,47 +125,20 @@ async function rows(api: any, reopen: () => void): Promise<Row[]> {
   const status = await backend.status().catch(() => undefined)
   const running = status?.state === "running"
 
+  // the action is on the row itself — selecting it starts or stops, rather
+  // than opening a submenu to find the one obvious thing to do
   out.push({
-    title: `${running ? "● Server running" : "○ Server stopped"}`,
-    description: `${settings.host}:${settings.port} · ${settings.apiKey ? "api-key set" : "no api-key"} · autostart ${settings.autostart ? "on" : "off"}`,
-    run: () => serverActions(api, running, settings.autostart, reopen),
+    title: running ? "● Server running   [stop]" : "○ Server stopped   [start]",
+    description: `${settings.host}:${settings.port}`,
+    run: async () => {
+      api.ui.toast({ message: running ? "stopping…" : "starting…", variant: "info" })
+      await (running ? backend.stop() : backend.start()).catch(() => {})
+      reopen()
+    },
   })
 
-  return out
-}
 
-/** Start/stop is explicit: setting a path should not spawn a server by itself. */
-function serverActions(api: any, running: boolean, autostart: boolean, reopen: () => void) {
-  const options = [
-    running
-      ? { title: "Stop server", value: "stop", description: "kills the llama-server we started" }
-      : { title: "Start server", value: "start", description: "loads models.ini and listens" },
-    {
-      title: autostart ? "Autostart: on → turn off" : "Autostart: off → turn on",
-      value: "autostart",
-      description: autostart ? "currently starts with opencode" : "currently only starts when you ask",
-    },
-    { title: "Open server.ini", value: "edit", description: collapseHome(Server.FILE) },
-  ]
-  api.ui.dialog.replace(() => (
-    <api.ui.DialogSelect
-      title="Server"
-      options={options}
-      onSelect={(option: { value: string }) => {
-        if (option.value === "edit") {
-          api.ui.toast({ message: `Edit ${collapseHome(Server.FILE)}`, variant: "info" })
-          return reopen()
-        }
-        if (option.value === "autostart") {
-          void Server.update("autostart", autostart ? "off" : "on").then(reopen)
-          return
-        }
-        api.ui.toast({ message: running ? "stopping…" : "starting…", variant: "info" })
-        const action = running ? backend.stop() : backend.start()
-        void Promise.resolve(action).then(reopen, reopen)
-      }}
-    />
-  ))
+  return out
 }
 
 export function openSetup(api: any) {
