@@ -86,6 +86,19 @@ export type SyncResult = {
 export async function sync(models: LocalModel[]): Promise<SyncResult> {
   const existing = await fs.readFile(FILE, "utf8").catch(() => "")
   const doc = Ini.parse(existing)
+  // llama-server opens these paths literally — it does not expand `~`, so a
+  // hand-written `model = ~/...` fails with "failed to open GGUF file". This is
+  // the one case where an existing section is rewritten, because leaving it
+  // alone means the model silently never loads.
+  let rewrote = false
+  for (const item of doc.sections) {
+    for (const key of ["model", "mmproj"] as const) {
+      const raw = Ini.get(item, key)?.trim()
+      if (!raw || !raw.startsWith("~")) continue
+      Ini.set(item, key, expandHome(raw))
+      rewrote = true
+    }
+  }
   const names = new Set(doc.sections.map((item) => item.name))
 
   // Compare expanded paths. Hand-written sections routinely use `~/...` while
@@ -114,7 +127,8 @@ export async function sync(models: LocalModel[]): Promise<SyncResult> {
     added.push(section({ ...model, id }))
   }
 
-  const body = existing.trim().length > 0 ? existing.replace(/\s+$/, "") : HEADER
+  const source = rewrote ? Ini.serialize(doc) : existing
+  const body = source.trim().length > 0 ? source.replace(/\s+$/, "") : HEADER
   const next = added.length > 0 ? [body, "", added.join("\n\n"), ""].join("\n") : body + "\n"
 
   await fs.mkdir(path.dirname(FILE), { recursive: true }).catch(() => {})

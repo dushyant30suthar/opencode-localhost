@@ -152,11 +152,6 @@ export function Provider(props: { theme: Theme; data: PanelData; stacked?: boole
         </text>
       </Show>
       {/* the file path is only useful where there is room to read it */}
-      <Show when={status().state === "running" && props.data.registered === false}>
-        <text fg={props.theme.warning} wrapMode="none">
-          restart opencode
-        </text>
-      </Show>
       <Show when={props.stacked && "hint" in status() && (status() as { hint?: string }).hint}>
         <text fg={props.theme.textMuted} wrapMode="word">
           {(status() as { hint: string }).hint}
