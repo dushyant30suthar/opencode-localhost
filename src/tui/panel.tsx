@@ -176,7 +176,8 @@ export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean 
       <Show when={props.stacked}>
         <text fg={props.theme.textMuted}>MODEL</text>
       </Show>
-      <text fg={props.theme.text} wrapMode="none">
+      {/* the id carries the publisher prefix; wrap rather than truncate it */}
+      <text fg={props.theme.text} wrapMode="word">
         {loaded()?.id ?? "no model loaded"}
       </text>
       <For each={detail()}>
@@ -244,7 +245,13 @@ async function probe(): Promise<ProviderStatus> {
     if (!res.ok) return { state: "stopped" }
     const body: any = await res.json()
     const entries: any[] = Array.isArray(body?.data) ? body.data : []
-    const active = entries.find((entry) => entry?.status?.args || entry?.status?.status === "loading")
+    // prefer whatever the server says is actually loading/loaded; fall back to
+    // any entry carrying launch args. Picking the first entry with args showed
+    // a stale model after a swap, since the previous one keeps its args.
+    const active =
+      entries.find((entry) => entry?.status?.status === "loading") ??
+      entries.find((entry) => entry?.status?.status === "loaded") ??
+      entries.find((entry) => entry?.status?.args)
     if (!active) return { state: "running", endpoint: baseURL }
     return {
       state: "running",

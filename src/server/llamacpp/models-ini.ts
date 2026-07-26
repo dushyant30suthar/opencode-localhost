@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import * as Ini from "../../shared/ini.ts"
-import { configDir } from "../../shared/paths.ts"
+import { configDir, expandHome } from "../../shared/paths.ts"
 import type { LocalModel } from "./discover.ts"
 
 /**
@@ -88,10 +88,14 @@ export async function sync(models: LocalModel[]): Promise<SyncResult> {
   const doc = Ini.parse(existing)
   const names = new Set(doc.sections.map((item) => item.name))
 
+  // Compare expanded paths. Hand-written sections routinely use `~/...` while
+  // discovery always produces absolute paths; comparing the raw strings makes
+  // an already-tuned model look new, and appends a default 32k section beside
+  // it that then wins — silently replacing tuned settings.
   const byFile = new Map<string, string>()
   for (const item of doc.sections) {
     const file = Ini.get(item, "model")?.trim()
-    if (file) byFile.set(file, item.name)
+    if (file) byFile.set(expandHome(file), item.name)
   }
 
   const added: string[] = []

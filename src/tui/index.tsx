@@ -15,13 +15,15 @@ import { openSetup } from "./setup.tsx"
  */
 
 /**
- * Columns are fixed and flexShrink is off. Without this the row collapses
- * under its own content in a narrow terminal and the three sections overprint
- * each other. Total is 74, matching opencode's default prompt width of 75.
+ * Hardware and provider are fixed and cannot shrink — without that the row
+ * collapses under its own content and the sections overprint each other.
+ *
+ * MODEL takes whatever is left rather than a fixed width: model ids carry a
+ * publisher prefix ("lmstudio-community/Qwen3.6-35B-A3B-GGUF") and a fixed
+ * column truncated exactly the part that identifies which model is loaded.
  */
 const HARDWARE_WIDTH = 30
 const PROVIDER_WIDTH = 18
-const MODEL_WIDTH = 23
 
 /** One `│` per row, so the rule spans the whole block rather than its first line. */
 function Divider(props: { color: string; rows: number }) {
@@ -84,7 +86,7 @@ function HomePanel(props: { api: any }) {
   const data = usePanelData(registered(props.api))
   useAutoReload(props.api, data)
   return (
-    <box width="100%" maxWidth={75} flexDirection="row" flexShrink={0} paddingTop={1}>
+    <box width="100%" flexDirection="row" flexShrink={0} paddingTop={1}>
       <box width={HARDWARE_WIDTH} flexShrink={0} flexDirection="column">
         <Hardware theme={theme()} data={data()} />
       </box>
@@ -93,7 +95,7 @@ function HomePanel(props: { api: any }) {
         <Provider theme={theme()} data={data()} />
       </box>
       <Divider color={theme().border} rows={hardwareRows(data()) + 1} />
-      <box width={MODEL_WIDTH} flexShrink={0} flexDirection="column">
+      <box flexGrow={1} minWidth={20} flexDirection="column">
         <Model theme={theme()} data={data()} />
       </box>
     </box>

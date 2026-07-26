@@ -58,7 +58,9 @@ async function register(input: any) {
     // and exposes no way to re-read it, so the provider genuinely cannot appear
     // until the next launch; the panel says so rather than leaving it silent.
     if (status.state !== "running") {
-      void backend.start().catch(() => {})
+      // Only if the user asked for it. Setting a path in the setup screen
+      // should not silently spawn a server and take VRAM.
+      if (await backend.autostart().catch(() => false)) void backend.start().catch(() => {})
       continue
     }
 

@@ -176,12 +176,50 @@ export function create(): Backend {
     }
   }
 
+  /**
+   * Stop the server we spawned. Checks /proc before signalling so a recycled
+   * pid is never killed, and only kills a process that is actually
+   * llama-server — the pidfile outlives crashes and reboots.
+   */
+  async function stop(): Promise<boolean> {
+    const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
+    const pid = Number.parseInt(raw.trim(), 10)
+    if (!Number.isFinite(pid) || pid <= 0) return false
+    const exe = await fs.readlink(`/proc/${pid}/exe`).catch(() => "")
+    if (!exe.includes("llama-server")) {
+      await fs.rm(PID_FILE, { force: true }).catch(() => {})
+      return false
+    }
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {
+      return false
+    }
+    for (let i = 0; i < 40; i++) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        break
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    try {
+      process.kill(pid, "SIGKILL")
+    } catch {
+      // already gone
+    }
+    await fs.rm(PID_FILE, { force: true }).catch(() => {})
+    return true
+  }
+
   return {
     id: Server.BACKEND,
     name: "llama.cpp",
     status,
     models,
     start,
+    stop,
+    autostart: async () => (await config()).autostart,
     baseURL,
     apiKey: () => settings?.apiKey || undefined,
   }

@@ -2,6 +2,9 @@ import fs from "fs/promises"
 import { BACKENDS, allOnPath, expand, supported, type BackendSpec } from "../shared/backends.ts"
 import { collapseHome } from "../shared/paths.ts"
 import * as Server from "../server/llamacpp/server-ini.ts"
+import { create as llamacpp } from "../server/llamacpp/index.ts"
+
+const backend = llamacpp()
 
 /**
  * Setup, kept separate from the status strip.
@@ -119,13 +122,50 @@ async function rows(api: any, reopen: () => void): Promise<Row[]> {
     run: () => promptPath(api, "Models directory", dir, "models-dir", reopen),
   })
 
+  const status = await backend.status().catch(() => undefined)
+  const running = status?.state === "running"
+
   out.push({
-    title: "  Server",
-    description: `${settings.host}:${settings.port} · ${settings.apiKey ? "api-key set" : "no api-key"}`,
-    run: () => api.ui.toast({ message: `Edit ${collapseHome(Server.FILE)}`, variant: "info" }),
+    title: `${running ? "● Server running" : "○ Server stopped"}`,
+    description: `${settings.host}:${settings.port} · ${settings.apiKey ? "api-key set" : "no api-key"} · autostart ${settings.autostart ? "on" : "off"}`,
+    run: () => serverActions(api, running, settings.autostart, reopen),
   })
 
   return out
+}
+
+/** Start/stop is explicit: setting a path should not spawn a server by itself. */
+function serverActions(api: any, running: boolean, autostart: boolean, reopen: () => void) {
+  const options = [
+    running
+      ? { title: "Stop server", value: "stop", description: "kills the llama-server we started" }
+      : { title: "Start server", value: "start", description: "loads models.ini and listens" },
+    {
+      title: autostart ? "Autostart: on → turn off" : "Autostart: off → turn on",
+      value: "autostart",
+      description: autostart ? "currently starts with opencode" : "currently only starts when you ask",
+    },
+    { title: "Open server.ini", value: "edit", description: collapseHome(Server.FILE) },
+  ]
+  api.ui.dialog.replace(() => (
+    <api.ui.DialogSelect
+      title="Server"
+      options={options}
+      onSelect={(option: { value: string }) => {
+        if (option.value === "edit") {
+          api.ui.toast({ message: `Edit ${collapseHome(Server.FILE)}`, variant: "info" })
+          return reopen()
+        }
+        if (option.value === "autostart") {
+          void Server.update("autostart", autostart ? "off" : "on").then(reopen)
+          return
+        }
+        api.ui.toast({ message: running ? "stopping…" : "starting…", variant: "info" })
+        const action = running ? backend.stop() : backend.start()
+        void Promise.resolve(action).then(reopen, reopen)
+      }}
+    />
+  ))
 }
 
 export function openSetup(api: any) {
