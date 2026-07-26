@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { spawn } from "child_process"
 import { stateDir, collapseHome } from "../../shared/paths.ts"
-import type { LoadedModel, ProviderStatus } from "../../shared/types.ts"
+import type { LoadEvent, LoadedModel, ProviderStatus } from "../../shared/types.ts"
 import type { Backend, DiscoveredModel } from "../backend.ts"
 import * as Server from "./server-ini.ts"
 import * as Models from "./models-ini.ts"
@@ -236,26 +236,98 @@ export function create(): Backend {
       if (!res.ok) return undefined
       const body: any = await res.json()
       const entries: any[] = Array.isArray(body?.data) ? body.data : []
-      // prefer what the server says is loading/loaded: the previous model keeps
-      // its args after a swap, so "first entry with args" showed a stale name
+      // llama-server reports state as status.value: "loaded" | "unloaded" |
+      // "loading". Every preset carries args, so matching on args alone picked
+      // whichever model sorted first rather than the one actually loaded.
       const active =
-        entries.find((entry) => entry?.status?.status === "loading") ??
-        entries.find((entry) => entry?.status?.status === "loaded") ??
-        entries.find((entry) => entry?.status?.args)
+        entries.find((entry) => entry?.status?.value === "loading") ??
+        entries.find((entry) => entry?.status?.value === "loaded")
       if (!active) return undefined
       // llama-server reports load progress as {stages, current, value} while
       // weights stream in; value is 0-1 for the stage named by `current`
-      const progress = active?.status?.progress
-      const value = typeof progress?.value === "number" ? progress.value : undefined
       return {
         id: String(active.id ?? ""),
         args: argsOf(active?.status?.args),
-        loading: active?.status?.status === "loading",
-        progress: value,
-        stage: typeof progress?.current === "string" ? progress.current : undefined,
+        loading: active?.status?.value === "loading",
       }
     } catch {
       return undefined
+    }
+  }
+
+  /**
+   * Stream model state from /models/sse. The REST listing only flips from
+   * unloaded to loaded at the very end, so a thirty-second load looks like a
+   * hang unless we read this.
+   *
+   * Captured from a real load: one "model_status" frame announces the load,
+   * then ~20 "status_change" frames carry the progress, ending with
+   * status "loaded". The outgoing model gets its own "unloaded" frame.
+   *
+   *   data: {"model":"...","event":"status_change",
+   *          "data":{"status":"loading",
+   *                  "progress":{"stages":["text_model"],"current":"text_model","value":0.19}}}
+   */
+  function watch(onEvent: (event: LoadEvent) => void): () => void {
+    const controller = new AbortController()
+    let stopped = false
+
+    const connect = async () => {
+      while (!stopped) {
+        try {
+          const cfg = await config()
+          const host = cfg.host === "0.0.0.0" ? "127.0.0.1" : cfg.host
+          const res = await fetch(`http://${host}:${cfg.port}/models/sse`, {
+            signal: controller.signal,
+            headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+          })
+          if (!res.ok || !res.body) throw new Error("no stream")
+          const reader = res.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ""
+          while (!stopped) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            // frames are separated by a blank line; keep any partial tail
+            const frames = buffer.split("\n\n")
+            buffer = frames.pop() ?? ""
+            for (const frame of frames) {
+              const line = frame.split("\n").find((item) => item.startsWith("data:"))
+              if (!line) continue
+              try {
+                const payload = JSON.parse(line.slice(5).trim())
+                // progress rides on status_change; model_status only announces
+                // the start. Filtering to model_status dropped every update.
+                const kind = payload?.event
+                if (kind && kind !== "model_status" && kind !== "status_change") continue
+                const body = payload?.data ?? {}
+                const progress = body?.progress
+                onEvent({
+                  model: String(payload?.model ?? ""),
+                  loading: body?.status === "loading",
+                  failed: body?.status === "failed" || body?.status === "error",
+                  loaded: body?.status === "loaded",
+                  progress: typeof progress?.value === "number" ? progress.value : undefined,
+                  stage: typeof progress?.current === "string" ? progress.current : undefined,
+                })
+              } catch {
+                // a malformed frame is not worth tearing the stream down for
+              }
+            }
+          }
+        } catch {
+          // server down or restarted; wait before reconnecting
+        }
+        if (stopped) return
+        await new Promise((resolve) => setTimeout(resolve, 2_000))
+      }
+    }
+
+    void connect()
+    return () => {
+      stopped = true
+      controller.abort()
     }
   }
 
@@ -268,6 +340,7 @@ export function create(): Backend {
     start,
     stop,
     loaded,
+    watch,
     baseURL,
     apiKey: () => settings?.apiKey || undefined,
   }

@@ -1,4 +1,4 @@
-import type { LoadedModel, ProviderStatus } from "../shared/types.ts"
+import type { LoadEvent, LoadedModel, ProviderStatus } from "../shared/types.ts"
 
 /**
  * What every backend implements. llama.cpp today; vLLM and OpenVINO are new
@@ -46,6 +46,13 @@ export interface Backend {
 
   /** What the server currently holds, if anything. Undefined when it is down. */
   loaded(): Promise<LoadedModel | undefined>
+
+  /**
+   * Live load progress. Polling cannot see this: a model streaming into VRAM
+   * takes tens of seconds and the REST listing only flips from unloaded to
+   * loaded at the end. Returns an unsubscribe.
+   */
+  watch(onEvent: (event: LoadEvent) => void): () => void
 
   baseURL(): string
   apiKey(): string | undefined

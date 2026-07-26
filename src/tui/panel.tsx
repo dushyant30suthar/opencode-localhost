@@ -1,5 +1,5 @@
-import { createMemo, createSignal, createEffect, onCleanup, For, Show } from "solid-js"
-import type { BackendPanel, GpuStat, PanelData, ProviderStatus, SystemStat } from "../shared/types.ts"
+import { createMemo, createSignal, createEffect, onCleanup, untrack, For, Show } from "solid-js"
+import type { BackendPanel, GpuStat, LoadEvent, PanelData, ProviderStatus, SystemStat } from "../shared/types.ts"
 import { gpus } from "./hardware/nvidia.ts"
 import { system } from "./hardware/system.ts"
 import { BACKENDS } from "./backends.ts"
@@ -192,8 +192,11 @@ function detailOf(backend: BackendPanel, throughput?: number) {
   // while weights stream in there are no launch flags to report yet, and the
   // thing worth showing is how far along it is
   if (model.loading) {
+    // Measured: llama-server reports 0% for ~9s while it allocates, then runs
+    // 0->100% in about 3s. A bar pinned at 0% for nine seconds reads as hung,
+    // so say what it is actually doing until there is progress to show.
     const pct = model.progress === undefined ? undefined : Math.round(model.progress * 100)
-    const line = pct === undefined ? "loading…" : `${bar(model.progress!)} ${pct}%`
+    const line = !pct ? "allocating…" : `${bar(model.progress!)} ${pct}%`
     return [line, model.stage ?? ""].filter(Boolean)
   }
   const args = model.args
@@ -260,36 +263,92 @@ export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean;
   )
 }
 
-/** Polls only while mounted, so a hidden panel costs nothing. */
-export function usePanelData(isRegistered?: () => boolean) {
-  const [data, setData] = createSignal<PanelData>({ backends: [], gpus: [] })
+// One source of truth for every mount. The home strip and the session sidebar
+// are separate components, so a per-component hook meant two polling loops, two
+// SSE subscriptions and two nvidia-smi calls whenever both were alive.
+const [data, setData] = createSignal<PanelData>({ backends: [], gpus: [] })
+// live load progress, keyed by backend id. Polling cannot see this: the REST
+// listing only flips unloaded -> loaded once the model is already up.
+const [live, setLive] = createSignal<Record<string, LoadEvent>>({})
+let mounted = 0
+let stopPolling: (() => void) | undefined
+let stopWatching: (() => void) | undefined
+let registeredCheck: (() => boolean) | undefined
 
-  async function refresh() {
-    const [gpuStats, sysStat] = await Promise.all([gpus().catch(() => []), system().catch(() => undefined)])
-    const backends = await Promise.all(
-      BACKENDS.map(async (backend) => {
-        const status = await backend.status().catch<ProviderStatus>(() => ({ state: "stopped" }))
-        const loaded = status.state === "running" ? await backend.loaded().catch(() => undefined) : undefined
-        return { id: backend.id, name: backend.name, status, loaded }
-      }),
-    )
-    // an engine with no binary or no models directory is not configured;
-    // carrying it on screen forever is noise, and /localhost lists them all
-    setData({
-      backends: backends.filter((backend) => backend.status.state !== "unconfigured"),
-      gpus: gpuStats,
-      memory: sysStat,
-      registered: isRegistered?.() ?? true,
-    })
+async function refresh() {
+  const [gpuStats, sysStat] = await Promise.all([gpus().catch(() => []), system().catch(() => undefined)])
+  const backends = await Promise.all(
+    BACKENDS.map(async (backend) => {
+      const status = await backend.status().catch<ProviderStatus>(() => ({ state: "stopped" }))
+      const polled = status.state === "running" ? await backend.loaded().catch(() => undefined) : undefined
+      const event = live()[backend.id]
+      // a load in flight is only visible on the stream, and it names the
+      // incoming model before the listing has caught up
+      const loaded =
+        event?.loading === true
+          ? { id: event.model || polled?.id || "", args: polled?.args ?? {}, ...event }
+          : polled
+      return { id: backend.id, name: backend.name, status, loaded }
+    }),
+  )
+  // an engine with no binary or no models directory is not configured;
+  // carrying it on screen forever is noise, and /localhost lists them all
+  setData({
+    backends: backends.filter((backend) => backend.status.state !== "unconfigured"),
+    gpus: gpuStats,
+    memory: sysStat,
+    registered: registeredCheck?.() ?? true,
+  })
+}
+
+function startPolling() {
+  let stopped = false
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const tick = async () => {
+    await refresh()
+    if (stopped) return
+    const loading =
+      Object.values(untrack(live)).some((event) => event.loading) ||
+      untrack(data).backends.some((backend) => backend.loaded?.loading)
+    timer = setTimeout(tick, loading ? POLL_LOADING_MS : POLL_MS)
   }
+  void tick()
+  return () => {
+    stopped = true
+    if (timer) clearTimeout(timer)
+  }
+}
 
-  // poll faster while something is loading, so the bar moves smoothly, and
-  // drop back afterwards so an idle panel costs almost nothing
+function startWatching() {
+  const stops = BACKENDS.map((backend) =>
+    backend.watch((event) => {
+      setLive((current) => ({ ...current, [backend.id]: event }))
+      // the stream is the only timely signal; fold it in immediately rather
+      // than waiting for the next poll tick
+      void refresh()
+    }),
+  )
+  return () => stops.forEach((stop) => stop())
+}
+
+/** Shared across mounts: the first mount starts the work, the last stops it. */
+export function usePanelData(isRegistered?: () => boolean) {
+  if (isRegistered) registeredCheck = isRegistered
+
   createEffect(() => {
-    const loading = data().backends.some((backend) => backend.loaded?.loading)
-    void refresh()
-    const timer = setInterval(() => void refresh(), loading ? POLL_LOADING_MS : POLL_MS)
-    onCleanup(() => clearInterval(timer))
+    mounted++
+    if (mounted === 1) {
+      stopPolling = startPolling()
+      stopWatching = startWatching()
+    }
+    onCleanup(() => {
+      mounted--
+      if (mounted > 0) return
+      stopPolling?.()
+      stopWatching?.()
+      stopPolling = undefined
+      stopWatching = undefined
+    })
   })
 
   return data

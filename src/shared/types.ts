@@ -25,6 +25,17 @@ export type LoadedModel = {
   stage?: string
 }
 
+/** A model changing state, streamed while it loads. */
+export type LoadEvent = {
+  model: string
+  loading: boolean
+  loaded?: boolean
+  failed?: boolean
+  /** 0-1 for the stage named below. */
+  progress?: number
+  stage?: string
+}
+
 /**
  * "unconfigured" is a first-class state, not an error: a fresh install has no
  * models directory and the panel is where the user is told so.
