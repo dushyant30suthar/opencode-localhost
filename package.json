@@ -1,0 +1,57 @@
+{
+  "name": "opencode-localhost",
+  "version": "0.1.0",
+  "description": "Run local models in opencode. llama.cpp as a provider, with live GPU, VRAM and CPU telemetry in the sidebar.",
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "llama.cpp",
+    "llama-server",
+    "local-models",
+    "gguf",
+    "vllm",
+    "gpu",
+    "self-hosted"
+  ],
+  "license": "MIT",
+  "author": "dushyant30suthar",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dushyant30suthar/opencode-localhost.git"
+  },
+  "homepage": "https://github.com/dushyant30suthar/opencode-localhost#readme",
+  "bugs": "https://github.com/dushyant30suthar/opencode-localhost/issues",
+  "type": "module",
+  "exports": {
+    "./server": "./src/server/index.ts",
+    "./tui": "./src/tui/index.tsx"
+  },
+  "files": [
+    "src",
+    "tsconfig.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "peerDependencies": {
+    "@opentui/solid": ">=0.4.5",
+    "solid-js": ">=1.9.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentui/solid": {
+      "optional": true
+    },
+    "solid-js": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "^1.18.4",
+    "@opentui/solid": "^0.4.5",
+    "@types/node": "^26.1.1",
+    "solid-js": "^1.9.0",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
