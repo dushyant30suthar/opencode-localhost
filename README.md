@@ -26,13 +26,26 @@ opencode loads server-side and TUI plugins separately, so it goes in two files.
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
-{ "plugin": ["opencode-localhost"] }
+{ "plugin": ["/absolute/path/to/opencode-localhost"] }
 ```
 
 ```jsonc
 // ~/.config/opencode/tui.jsonc
-{ "plugin": ["opencode-localhost"] }
+{ "plugin": ["/absolute/path/to/opencode-localhost"] }
 ```
+
+```sh
+git clone https://github.com/dushyant30suthar/opencode-localhost
+cd opencode-localhost && bun install
+```
+
+**Why a path and not the package name?** On opencode 1.18.5, a TUI plugin
+installed by name never loads. opencode resolves an npm plugin against the
+wrapper `package.json` it generates in `~/.cache/opencode/packages/<name>@latest/`,
+which has no `exports` field — so `exports["./tui"]` is never found and the TUI
+half is skipped silently. The server half survives on a fallback path, which
+makes it look like the provider works but the panel is broken. Referencing the
+package by path avoids that resolution entirely.
 
 Start opencode. The panel appears under the prompt and tells you what is still
 missing.

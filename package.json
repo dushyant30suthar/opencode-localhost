@@ -1,6 +1,6 @@
 {
   "name": "opencode-localhost",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Run local models in opencode. llama.cpp as a provider, with live GPU, VRAM and CPU telemetry in the sidebar.",
   "keywords": [
     "opencode",
@@ -32,26 +32,16 @@
     "README.md",
     "LICENSE"
   ],
-  "peerDependencies": {
-    "@opentui/solid": ">=0.4.5",
-    "solid-js": ">=1.9.0"
-  },
-  "peerDependenciesMeta": {
-    "@opentui/solid": {
-      "optional": true
-    },
-    "solid-js": {
-      "optional": true
-    }
-  },
   "devDependencies": {
     "@opencode-ai/plugin": "^1.18.4",
-    "@opentui/solid": "^0.4.5",
     "@types/node": "^26.1.1",
-    "solid-js": "^1.9.0",
     "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22"
+  },
+  "dependencies": {
+    "@opentui/solid": "^0.4.5",
+    "solid-js": "^1.9.0"
   }
 }
