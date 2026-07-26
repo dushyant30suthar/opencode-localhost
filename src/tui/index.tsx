@@ -1,5 +1,6 @@
 import { createEffect, For, Show } from "solid-js"
 import { Hardware, Provider, Model, hardwareRows, usePanelData } from "./panel.tsx"
+import { openSetup } from "./setup.tsx"
 
 /**
  * The TUI half.
@@ -116,6 +117,18 @@ function SidebarPanel(props: { api: any }) {
 }
 
 const tui = async (api: any) => {
+  // Setup lives behind a command rather than in the strip: the strip answers
+  // "is it working", this answers "where is everything".
+  api.command?.register(() => [
+    {
+      title: "Local models: setup",
+      value: "localhost.setup",
+      category: "Provider",
+      slash: { name: "localhost" },
+      onSelect: () => openSetup(api),
+    },
+  ])
+
   api.slots.register({
     order: 350,
     slots: {
