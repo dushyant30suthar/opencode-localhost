@@ -1,4 +1,4 @@
-import { For, Show } from "solid-js"
+import { createEffect, For, Show } from "solid-js"
 import { Hardware, Provider, Model, hardwareRows, usePanelData } from "./panel.tsx"
 
 /**
@@ -37,9 +37,51 @@ function registered(api: any) {
   return () => (api.state?.provider ?? []).some((item: any) => item?.id === "llamacpp")
 }
 
+/**
+ * Ask opencode to re-read its config, so a provider that was not ready at
+ * startup appears without restarting.
+ *
+ * opencode's TUI binds SIGUSR2 to a config invalidate + instance dispose, and
+ * a TUI plugin runs inside that same process — so it can signal itself. This
+ * is the only reload path opencode exposes; there is no endpoint for it.
+ *
+ * Only fired from the home screen. The reload disposes live instances, which
+ * is fine before you start working and rude in the middle of a session.
+ */
+function requestReload(api: any): boolean {
+  if (api.route?.current?.name !== "home") return false
+  try {
+    process.kill(process.pid, "SIGUSR2")
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Once the backend is up but opencode has not picked it up, reload — once.
+ * Guarded because the reload is asynchronous: without it, every poll before
+ * the provider list refreshes would fire another signal.
+ */
+function useAutoReload(api: any, data: () => { status: { state: string }; registered?: boolean }) {
+  let fired = false
+  createEffect(() => {
+    const ready = data().status.state === "running"
+    if (!ready || data().registered !== false) {
+      // reset once opencode has caught up, so a later restart of the backend
+      // can trigger exactly one more reload
+      if (data().registered) fired = false
+      return
+    }
+    if (fired) return
+    fired = requestReload(api)
+  })
+}
+
 function HomePanel(props: { api: any }) {
   const theme = () => props.api.theme.current
   const data = usePanelData(registered(props.api))
+  useAutoReload(props.api, data)
   return (
     <box width="100%" maxWidth={75} flexDirection="row" flexShrink={0} paddingTop={1}>
       <box width={HARDWARE_WIDTH} flexShrink={0} flexDirection="column">
