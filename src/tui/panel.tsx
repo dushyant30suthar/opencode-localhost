@@ -115,7 +115,7 @@ export function Hardware(props: { theme: Theme; data: PanelData }) {
   )
 }
 
-export function Provider(props: { theme: Theme; data: PanelData; stacked?: boolean }) {
+export function Provider(props: { theme: Theme; data: PanelData; stacked?: boolean; busy?: boolean; onToggle?: () => void }) {
   const status = () => props.data.status
   return (
     <box flexDirection="column">
@@ -134,6 +134,16 @@ export function Provider(props: { theme: Theme; data: PanelData; stacked?: boole
       <Show when={status().state === "running" && "endpoint" in status()}>
         <text fg={props.theme.textMuted} wrapMode="none">
           {(status() as { endpoint: string }).endpoint.replace(/^https?:\/\//, "").replace(/\/v1$/, "")}
+        </text>
+      </Show>
+      {/* the control sits where the state is shown, so it reads as one thing */}
+      <Show when={props.onToggle && (status().state === "running" || status().state === "stopped")}>
+        <text
+          fg={props.busy ? props.theme.textMuted : props.theme.primary}
+          wrapMode="none"
+          onMouseUp={() => !props.busy && props.onToggle?.()}
+        >
+          {props.busy ? "…working" : status().state === "running" ? "[stop]" : "[start]"}
         </text>
       </Show>
       <Show when={"message" in status()}>
@@ -156,7 +166,7 @@ export function Provider(props: { theme: Theme; data: PanelData; stacked?: boole
   )
 }
 
-export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean }) {
+export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean; onChange?: () => void }) {
   const loaded = () => (props.data.status.state === "running" ? props.data.status.loaded : undefined)
   const detail = createMemo(() => {
     const model = loaded()
@@ -177,9 +187,14 @@ export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean 
         <text fg={props.theme.textMuted}>MODEL</text>
       </Show>
       {/* the id carries the publisher prefix; wrap rather than truncate it */}
-      <text fg={props.theme.text} wrapMode="word">
+      <text fg={props.theme.text} wrapMode="word" onMouseUp={() => props.onChange?.()}>
         {loaded()?.id ?? "no model loaded"}
       </text>
+      <Show when={props.onChange}>
+        <text fg={props.theme.primary} wrapMode="none" onMouseUp={() => props.onChange?.()}>
+          [change]
+        </text>
+      </Show>
       <For each={detail()}>
         {(line) => (
           <text fg={props.theme.textMuted} wrapMode="none">

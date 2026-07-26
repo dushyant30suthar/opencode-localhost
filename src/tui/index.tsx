@@ -1,6 +1,41 @@
-import { createEffect, For, Show } from "solid-js"
+import { createEffect, createSignal, For, Show } from "solid-js"
 import { Hardware, Provider, Model, hardwareRows, usePanelData } from "./panel.tsx"
 import { openSetup } from "./setup.tsx"
+import { create as llamacpp } from "../server/llamacpp/index.ts"
+
+const backend = llamacpp()
+
+/**
+ * Shared so the strip, the sidebar and the command all show the same busy
+ * state — start can take twenty seconds and three views disagreeing about
+ * whether it is running looks broken.
+ */
+const [busy, setBusy] = createSignal(false)
+
+/**
+ * opencode's own model picker, rather than a second one of ours: selecting a
+ * model is TUI-local state a plugin cannot write, so a custom list could show
+ * models but never switch to one.
+ */
+function openModelPicker(api: any) {
+  try {
+    api.keymap.dispatchCommand("model.list")
+  } catch {
+    api.ui.toast({ message: "could not open the model picker", variant: "error" })
+  }
+}
+
+async function toggleServer(running: boolean) {
+  if (busy()) return
+  setBusy(true)
+  try {
+    await (running ? backend.stop() : backend.start())
+  } catch {
+    // status reflects whatever actually happened on the next poll
+  } finally {
+    setBusy(false)
+  }
+}
 
 /**
  * The TUI half.
@@ -94,11 +129,16 @@ function HomePanel(props: { api: any }) {
       </box>
       <Divider color={theme().border} rows={hardwareRows(data()) + 1} />
       <box width={PROVIDER_WIDTH} flexShrink={0} flexDirection="column">
-        <Provider theme={theme()} data={data()} />
+        <Provider
+          theme={theme()}
+          data={data()}
+          busy={busy()}
+          onToggle={() => void toggleServer(data().status.state === "running")}
+        />
       </box>
       <Divider color={theme().border} rows={hardwareRows(data()) + 1} />
       <box flexGrow={1} minWidth={20} flexDirection="column">
-        <Model theme={theme()} data={data()} />
+        <Model theme={theme()} data={data()} onChange={() => openModelPicker(props.api)} />
       </box>
     </box>
   )
@@ -111,10 +151,16 @@ function SidebarPanel(props: { api: any }) {
     <box flexDirection="column">
       <Hardware theme={theme()} data={data()} />
       <box height={1} />
-      <Provider theme={theme()} data={data()} stacked />
+      <Provider
+        theme={theme()}
+        data={data()}
+        stacked
+        busy={busy()}
+        onToggle={() => void toggleServer(data().status.state === "running")}
+      />
       <box height={1} />
       <Show when={data().status.state === "running"}>
-        <Model theme={theme()} data={data()} stacked />
+        <Model theme={theme()} data={data()} stacked onChange={() => openModelPicker(props.api)} />
       </Show>
     </box>
   )
@@ -130,6 +176,17 @@ const tui = async (api: any) => {
       category: "Provider",
       slash: { name: "localhost" },
       onSelect: () => openSetup(api),
+    },
+    {
+      // keyboard route to the same action: tab is opencode's agent cycler, so
+      // the panel cannot be tabbed into. This is bindable and in ctrl+p.
+      title: "Local models: start/stop server",
+      value: "localhost.server.toggle",
+      category: "Provider",
+      onSelect: async () => {
+        const status = await backend.status().catch(() => undefined)
+        void toggleServer(status?.state === "running")
+      },
     },
   ])
 
