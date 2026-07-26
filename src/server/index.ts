@@ -50,10 +50,12 @@ async function register(input: any) {
     // unconfigured or missing binary: contribute nothing. The panel explains why.
     if (!status || status.state === "unconfigured" || status.state === "failed") continue
 
-    // Not running: contribute nothing. Starting a server is the user's call,
-    // made explicitly from /localhost — it takes VRAM and it is not ours to
-    // decide. The panel shows the server as stopped with a [start] action.
-    if (status.state !== "running") continue
+    // Configured is enough. The models exist on disk whether or not a server
+    // happens to be up, and a picker that stays empty until you find and press
+    // [start] is indistinguishable from the plugin not working at all.
+    //
+    // Nothing is spawned here: the server comes up on the first request, in
+    // chat.params below.
 
     const models = await backend.models().catch(() => [])
     if (models.length === 0) continue
@@ -76,7 +78,14 @@ const server = async () => ({
 
   "chat.params": async (input: any, output: any) => {
     const providerID = input?.model?.providerID
-    if (!BACKENDS.some((backend) => backend.id === providerID)) return
+    const backend = BACKENDS.find((item) => item.id === providerID)
+    if (!backend) return
+
+    // Bring the engine up if this is the first request against it. Sending a
+    // message is a clear enough signal of intent — the objection was to
+    // spawning a server at launch, not to starting one you are about to use.
+    const status = await backend.status().catch(() => undefined)
+    if (status && status.state === "stopped") await backend.start().catch(() => {})
     const values = sampling.get(`${providerID}/${input?.model?.id}`)
     if (!values) return
     // opencode names three of these directly and passes the rest through options
