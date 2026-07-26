@@ -71,9 +71,9 @@ function DeviceRow(props: { theme: Theme; label: string; stat: GpuStat | SystemS
   return (
     <box flexDirection="row">
       <text fg={props.theme.textMuted}>{props.label.padEnd(5)}</text>
-      <text fg={memoryColor(props.theme, used(), total())}>{`${gib(used())}/${gib(total())}G`.padStart(13)}</text>
+      <text fg={memoryColor(props.theme, used(), total())}>{`${gib(used())}/${gib(total())}G`.padStart(14)}</text>
       <text fg={props.theme.text}>
-        {(props.stat.utilization === undefined ? "—" : `${props.stat.utilization}%`).padStart(8)}
+        {(props.stat.utilization === undefined ? "—" : `${props.stat.utilization}%`).padStart(9)}
       </text>
     </box>
   )
@@ -96,8 +96,8 @@ export function Hardware(props: { theme: Theme; data: PanelData }) {
       <box flexDirection="column">
         <box flexDirection="row">
           <text fg={props.theme.textMuted}>{"HARDWARE".padEnd(8)}</text>
-          <text fg={props.theme.textMuted}>{"memory".padStart(10)}</text>
-          <text fg={props.theme.textMuted}>{"compute".padStart(8)}</text>
+          <text fg={props.theme.textMuted}>{"memory".padStart(11)}</text>
+          <text fg={props.theme.textMuted}>{"compute".padStart(9)}</text>
         </box>
         <For each={rows()}>{(row) => <DeviceRow theme={props.theme} label={row.label} stat={row.stat} />}</For>
       </box>

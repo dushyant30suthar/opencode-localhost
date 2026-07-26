@@ -255,7 +255,8 @@ export function create(): Backend {
 
   return {
     id: Server.BACKEND,
-    name: "Localhost-llama.cpp",
+    name: "llama.cpp",
+    providerName: "Localhost-llama.cpp",
     status,
     models,
     start,

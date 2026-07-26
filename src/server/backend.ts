@@ -22,7 +22,15 @@ export type DiscoveredModel = {
 
 export interface Backend {
   readonly id: string
+
+  /** Short, for the panel — everything there is local, so no prefix. */
   readonly name: string
+
+  /**
+   * How it appears in opencode's provider list, where it sits beside cloud
+   * providers and several engines should group together.
+   */
+  readonly providerName: string
 
   /** Never throws. "unconfigured" is a normal answer on a fresh install. */
   status(): Promise<ProviderStatus>

@@ -22,7 +22,7 @@ const sampling = new Map<string, Record<string, number>>()
 
 function providerEntry(backend: Backend, models: DiscoveredModel[]) {
   return {
-    name: `${backend.name} (local)`,
+    name: backend.providerName,
     api: backend.baseURL(),
     npm: "@ai-sdk/openai-compatible",
     options: {

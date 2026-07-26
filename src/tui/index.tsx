@@ -60,8 +60,8 @@ async function toggleServer(id: string) {
  * prompt's 75-column max so it stays centred with everything else on the home
  * screen — full width made it hug the left edge while the prompt stayed centred.
  */
-const HARDWARE_WIDTH = 26
-const PROVIDER_WIDTH = 20
+const HARDWARE_WIDTH = 28
+const PROVIDER_WIDTH = 17
 
 /** One `│` per row, so the rule spans the whole block rather than its first line. */
 function Divider(props: { color: string; rows: number }) {
