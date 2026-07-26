@@ -54,7 +54,10 @@ export function create(): Backend {
   let settings: Server.ServerSettings | undefined
   let starting: Promise<ProviderStatus> | undefined
 
-  const config = async () => (settings ??= await Server.load())
+  // Re-read every time rather than caching: server.ini is small, and a cached
+  // copy meant editing it did nothing until the process restarted — including
+  // for the panel, which polls this several times a minute.
+  const config = async () => (settings = await Server.load())
   const baseURL = () => {
     const host = settings?.host === "0.0.0.0" ? "127.0.0.1" : (settings?.host ?? "127.0.0.1")
     return `http://${host}:${settings?.port ?? 9337}/v1`

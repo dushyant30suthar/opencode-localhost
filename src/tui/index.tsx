@@ -32,9 +32,14 @@ function Divider(props: { color: string; rows: number }) {
   )
 }
 
+/** opencode exposes the providers it loaded, which is how we detect the gap. */
+function registered(api: any) {
+  return () => (api.state?.provider ?? []).some((item: any) => item?.id === "llamacpp")
+}
+
 function HomePanel(props: { api: any }) {
   const theme = () => props.api.theme.current
-  const data = usePanelData()
+  const data = usePanelData(registered(props.api))
   return (
     <box width="100%" maxWidth={75} flexDirection="row" flexShrink={0} paddingTop={1}>
       <box width={HARDWARE_WIDTH} flexShrink={0} flexDirection="column">
@@ -54,7 +59,7 @@ function HomePanel(props: { api: any }) {
 
 function SidebarPanel(props: { api: any }) {
   const theme = () => props.api.theme.current
-  const data = usePanelData()
+  const data = usePanelData(registered(props.api))
   return (
     <box flexDirection="column">
       <Hardware theme={theme()} data={data()} />

@@ -52,17 +52,32 @@ models-max = 1
 api-key =
 ```
 
-Set `models-dir` and restart. Your models are found, `models.ini` is generated,
-`llama-server` starts, and the provider appears in the picker.
+Set `models-dir`, then restart opencode twice:
+
+| | What happens |
+|---|---|
+| **restart 1** | your models are found, `models.ini` is generated, and `llama-server` starts in the background |
+| **restart 2** | the provider appears in the model picker |
+
+Two restarts because opencode reads its config once when it starts and offers no
+way to re-read it, so a provider that was not ready at startup cannot appear
+until the next one. The panel says **restart opencode** once the server is up,
+so you are not left guessing. After this, the server keeps running and every
+later launch is immediate.
 
 Nothing is guessed. If `llama-server` is not on `$PATH`, set `bin` — the panel
 says so rather than failing silently.
 
 ## Per-model settings
 
-`~/.config/opencode/providers/llamacpp/models.ini` is a llama.cpp preset file,
-handed to `llama-server --models-preset` verbatim. A section is appended when a
-new `.gguf` appears and **never modified afterwards** — it is yours.
+`~/.config/opencode/providers/llamacpp/models.ini` is written **for you**, the
+first time your models are scanned — you never create it by hand. It is a
+llama.cpp preset file, handed to `llama-server --models-preset` verbatim. A
+section is appended when a new `.gguf` appears and **never modified
+afterwards** — it is yours.
+
+The section name is the model id, so renaming a section is safe: it keeps
+governing its file, and its settings keep being used.
 
 ```ini
 [unsloth/Qwen3.6-35B-A3B-GGUF]
@@ -108,6 +123,9 @@ OpenAI-compatible client can connect with it.
 
 ## Limitations
 
+- **A restart is needed the first time**, and whenever the server was not
+  already running at startup. opencode reads its config once per launch and
+  exposes no way to re-read it. The panel tells you when this applies.
 - **No warm-on-select.** opencode's TUI does not expose the selected model to
   plugins, so a model starts loading on your first message rather than the
   moment you pick it.

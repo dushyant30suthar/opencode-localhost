@@ -37,6 +37,12 @@ export type ProviderStatus =
 export type PanelData = {
   backend: { id: string; name: string }
   status: ProviderStatus
+  /**
+   * Whether opencode has actually picked up the provider. False while the
+   * server is up but opencode has not re-read its config — the one case where
+   * a restart is genuinely required, so the panel has to say so.
+   */
+  registered?: boolean
   gpus: GpuStat[]
   memory?: SystemStat
   cpu?: SystemStat

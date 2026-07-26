@@ -142,6 +142,11 @@ export function Provider(props: { theme: Theme; data: PanelData; stacked?: boole
         </text>
       </Show>
       {/* the file path is only useful where there is room to read it */}
+      <Show when={status().state === "running" && props.data.registered === false}>
+        <text fg={props.theme.warning} wrapMode="none">
+          restart opencode
+        </text>
+      </Show>
       <Show when={props.stacked && "hint" in status() && (status() as { hint?: string }).hint}>
         <text fg={props.theme.textMuted} wrapMode="word">
           {(status() as { hint: string }).hint}
@@ -186,7 +191,7 @@ export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean 
 }
 
 /** Polls only while mounted, so a hidden panel costs nothing. */
-export function usePanelData() {
+export function usePanelData(isRegistered?: () => boolean) {
   const [data, setData] = createSignal<PanelData>({
     backend: { id: "llamacpp", name: "llama.cpp" },
     status: { state: "stopped" },
@@ -196,7 +201,13 @@ export function usePanelData() {
   async function refresh() {
     const [gpuStats, sysStat] = await Promise.all([gpus().catch(() => []), system().catch(() => undefined)])
     const status = await probe().catch<ProviderStatus>(() => ({ state: "stopped" }))
-    setData((current) => ({ ...current, gpus: gpuStats, memory: sysStat, status }))
+    setData((current) => ({
+      ...current,
+      gpus: gpuStats,
+      memory: sysStat,
+      status,
+      registered: isRegistered?.() ?? true,
+    }))
   }
 
   createEffect(() => {

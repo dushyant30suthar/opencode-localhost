@@ -50,7 +50,17 @@ async function register(input: any) {
     // unconfigured or missing binary: contribute nothing. The panel explains why.
     if (!status || status.state === "unconfigured" || status.state === "failed") continue
 
-    if (status.state !== "running") await backend.start().catch(() => undefined)
+    // Not up yet: start it in the background and register nothing this run.
+    //
+    // Awaiting here would stall opencode's startup for as long as the server
+    // takes to answer — once on a fresh setup, and on *every* launch if the
+    // server is failing to start. opencode reads its config once per instance
+    // and exposes no way to re-read it, so the provider genuinely cannot appear
+    // until the next launch; the panel says so rather than leaving it silent.
+    if (status.state !== "running") {
+      void backend.start().catch(() => {})
+      continue
+    }
 
     const models = await backend.models().catch(() => [])
     if (models.length === 0) continue
