@@ -1,6 +1,6 @@
 {
   "name": "opencode-localhost",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "Run local models in opencode. llama.cpp as a provider, with live GPU, VRAM and CPU telemetry in the sidebar.",
   "keywords": [
     "opencode",
