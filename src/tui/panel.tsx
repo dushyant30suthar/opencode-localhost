@@ -1,16 +1,19 @@
 import { createMemo, createSignal, createEffect, onCleanup, For, Show } from "solid-js"
-import type { GpuStat, PanelData, ProviderStatus, SystemStat } from "../shared/types.ts"
+import type { BackendPanel, GpuStat, PanelData, ProviderStatus, SystemStat } from "../shared/types.ts"
 import { gpus } from "./hardware/nvidia.ts"
 import { system } from "./hardware/system.ts"
-import * as Server from "../server/llamacpp/server-ini.ts"
-import { collapseHome } from "../shared/paths.ts"
+import { BACKENDS } from "./backends.ts"
 
 /**
- * The panel: hardware, then provider, then model.
+ * Three sections: hardware, provider, model.
  *
- * Rows are built as fixed-width cells and padded explicitly rather than laid
- * out with flex, because in a monospace grid padStart/padEnd is what actually
- * guarantees the columns line up.
+ * Hardware is one fixed block because the GPUs are shared no matter how many
+ * engines are installed. PROVIDER is the section that multiplies — one entry
+ * per configured engine. MODEL describes what is actually loaded, naming the
+ * engine only when more than one holds something.
+ *
+ * Rows are padded explicitly rather than laid out with flex: in a monospace
+ * grid padStart/padEnd is what actually makes the columns line up.
  */
 
 const POLL_MS = 2_000
@@ -62,30 +65,21 @@ function statusWord(status: ProviderStatus) {
   }
 }
 
-function DeviceRow(props: {
-  theme: Theme
-  label: string
-  stat: GpuStat | SystemStat
-  labelWidth: number
-  memWidth: number
-  pctWidth: number
-}) {
+function DeviceRow(props: { theme: Theme; label: string; stat: GpuStat | SystemStat }) {
   const used = () => props.stat.usedMiB
   const total = () => props.stat.totalMiB
   return (
     <box flexDirection="row">
-      <text fg={props.theme.textMuted}>{props.label.padEnd(props.labelWidth)}</text>
-      <text fg={memoryColor(props.theme, used(), total())}>
-        {`${gib(used())}/${gib(total())}G`.padStart(props.memWidth)}
-      </text>
+      <text fg={props.theme.textMuted}>{props.label.padEnd(5)}</text>
+      <text fg={memoryColor(props.theme, used(), total())}>{`${gib(used())}/${gib(total())}G`.padStart(13)}</text>
       <text fg={props.theme.text}>
-        {(props.stat.utilization === undefined ? "—" : `${props.stat.utilization}%`).padStart(props.pctWidth)}
+        {(props.stat.utilization === undefined ? "—" : `${props.stat.utilization}%`).padStart(8)}
       </text>
     </box>
   )
 }
 
-/** Rows the hardware grid will render, so the divider can match its height. */
+/** Rows the hardware grid renders, so the divider can match its height. */
 export function hardwareRows(data: PanelData) {
   return data.gpus.length + (data.memory ? 1 : 0)
 }
@@ -101,124 +95,173 @@ export function Hardware(props: { theme: Theme; data: PanelData }) {
     <Show when={rows().length > 0}>
       <box flexDirection="column">
         <box flexDirection="row">
-          <text fg={props.theme.textMuted}>{"HARDWARE".padEnd(9)}</text>
-          <text fg={props.theme.textMuted}>{"memory".padStart(11)}</text>
-          <text fg={props.theme.textMuted}>{"compute".padStart(10)}</text>
+          <text fg={props.theme.textMuted}>{"HARDWARE".padEnd(8)}</text>
+          <text fg={props.theme.textMuted}>{"memory".padStart(10)}</text>
+          <text fg={props.theme.textMuted}>{"compute".padStart(8)}</text>
         </box>
-        <For each={rows()}>
-          {(row) => (
-            <DeviceRow theme={props.theme} label={row.label} stat={row.stat} labelWidth={6} memWidth={14} pctWidth={10} />
-          )}
-        </For>
+        <For each={rows()}>{(row) => <DeviceRow theme={props.theme} label={row.label} stat={row.stat} />}</For>
       </box>
     </Show>
   )
 }
 
-export function Provider(props: { theme: Theme; data: PanelData; stacked?: boolean; busy?: boolean; onToggle?: () => void }) {
-  const status = () => props.data.status
+function endpointOf(status: ProviderStatus) {
+  if (status.state !== "running") return undefined
+  return status.endpoint.replace(/^https?:\/\//, "").replace(/\/v1$/, "")
+}
+
+/** Two lines per engine: name, then state or endpoint, then the control. */
+function ProviderEntry(props: { theme: Theme; backend: BackendPanel; busy?: boolean; onToggle?: (id: string) => void }) {
+  const status = () => props.backend.status
+  const actionable = () => status().state === "running" || status().state === "stopped"
   return (
     <box flexDirection="column">
-      <Show when={props.stacked}>
-        <text fg={props.theme.textMuted}>PROVIDER</text>
-      </Show>
-      <text fg={props.theme.text} wrapMode="none">
-        {props.data.backend.name}
+      <text fg={props.theme.text} wrapMode="word">
+        {props.backend.name}
       </text>
       <box flexDirection="row">
         <text fg={statusColor(props.theme, status().state)}>{`${GLYPH[status().state]} `}</text>
-        <text fg={props.theme.text} wrapMode="none">
-          {statusWord(status())}
+        <text fg={props.theme.textMuted} wrapMode="none">
+          {endpointOf(status()) ?? statusWord(status())}
         </text>
       </box>
-      <Show when={status().state === "running" && "endpoint" in status()}>
-        <text fg={props.theme.textMuted} wrapMode="none">
-          {(status() as { endpoint: string }).endpoint.replace(/^https?:\/\//, "").replace(/\/v1$/, "")}
-        </text>
-      </Show>
-      {/* the control sits where the state is shown, so it reads as one thing */}
-      <Show when={props.onToggle && (status().state === "running" || status().state === "stopped")}>
-        <text
-          fg={props.busy ? props.theme.textMuted : props.theme.primary}
-          wrapMode="none"
-          onMouseUp={() => !props.busy && props.onToggle?.()}
-        >
-          {props.busy ? "…working" : status().state === "running" ? "[stop]" : "[start]"}
-        </text>
-      </Show>
       <Show when={"message" in status()}>
-        <text fg={props.theme.textMuted} wrapMode="none">
+        <text fg={props.theme.textMuted} wrapMode="word">
           {(status() as { message: string }).message}
         </text>
       </Show>
-      {/* the file path is only useful where there is room to read it */}
-      <Show when={props.stacked && "hint" in status() && (status() as { hint?: string }).hint}>
-        <text fg={props.theme.textMuted} wrapMode="word">
-          {(status() as { hint: string }).hint}
+      <Show when={props.onToggle && actionable()}>
+        <text
+          fg={props.busy ? props.theme.textMuted : props.theme.primary}
+          wrapMode="none"
+          onMouseUp={() => !props.busy && props.onToggle?.(props.backend.id)}
+        >
+          {props.busy ? "…working" : status().state === "running" ? "[stop]" : "[start]"}
         </text>
       </Show>
     </box>
   )
 }
 
+export function Provider(props: {
+  theme: Theme
+  data: PanelData
+  stacked?: boolean
+  busy?: string
+  onToggle?: (id: string) => void
+}) {
+  return (
+    <box flexDirection="column">
+      <Show when={props.stacked}>
+        <text fg={props.theme.textMuted}>PROVIDER</text>
+      </Show>
+      <Show
+        when={props.data.backends.length > 0}
+        fallback={
+          <text fg={props.theme.textMuted} wrapMode="word">
+            nothing configured — /localhost
+          </text>
+        }
+      >
+        <For each={props.data.backends}>
+          {(backend) => (
+            <ProviderEntry
+              theme={props.theme}
+              backend={backend}
+              busy={props.busy === backend.id}
+              onToggle={props.onToggle}
+            />
+          )}
+        </For>
+      </Show>
+    </box>
+  )
+}
+
+function detailOf(backend: BackendPanel, throughput?: number) {
+  const model = backend.loaded
+  if (!model) return []
+  const args = model.args
+  const first: string[] = []
+  if (args["ctx-size"]) first.push(`${args["ctx-size"]} ctx`)
+  if (args["cache-type-k"]) first.push(`${args["cache-type-k"]} KV`)
+  const second: string[] = []
+  if (args["gpu-layers"]) second.push(`ngl ${args["gpu-layers"]}`)
+  if (args["tensor-split"]) second.push(`split ${args["tensor-split"]}`)
+  if (throughput) second.push(`${throughput.toFixed(1)} tok/s`)
+  return [first.join(" · "), second.join(" · ")].filter(Boolean)
+}
+
 export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean; onChange?: () => void }) {
-  const loaded = () => (props.data.status.state === "running" ? props.data.status.loaded : undefined)
-  const detail = createMemo(() => {
-    const model = loaded()
-    if (!model) return []
-    const args = model.args
-    const parts: string[] = []
-    if (args["ctx-size"]) parts.push(`${args["ctx-size"]} ctx`)
-    if (args["cache-type-k"]) parts.push(`${args["cache-type-k"]} KV`)
-    const second: string[] = []
-    if (args["gpu-layers"]) second.push(`ngl ${args["gpu-layers"]}`)
-    if (args["tensor-split"]) second.push(`split ${args["tensor-split"]}`)
-    if (props.data.throughput) second.push(`${props.data.throughput.toFixed(1)} tok/s`)
-    return [parts.join(" · "), second.join(" · ")].filter(Boolean)
-  })
+  const withModel = createMemo(() => props.data.backends.filter((backend) => backend.loaded))
+  // the engine name is only worth repeating when more than one holds something
+  const grouped = createMemo(() => withModel().length > 1)
   return (
     <box flexDirection="column">
       <Show when={props.stacked}>
         <text fg={props.theme.textMuted}>MODEL</text>
       </Show>
-      {/* the id carries the publisher prefix; wrap rather than truncate it */}
-      <text fg={props.theme.text} wrapMode="word" onMouseUp={() => props.onChange?.()}>
-        {loaded()?.id ?? "no model loaded"}
-      </text>
+      <Show
+        when={withModel().length > 0}
+        fallback={
+          <text fg={props.theme.textMuted} wrapMode="none">
+            no model loaded
+          </text>
+        }
+      >
+        <For each={withModel()}>
+          {(backend) => (
+            <box flexDirection="column">
+              <Show when={grouped()}>
+                <text fg={props.theme.textMuted} wrapMode="none">
+                  {backend.name}
+                </text>
+              </Show>
+              {/* ids carry a publisher prefix; wrap rather than truncate */}
+              <text fg={props.theme.text} wrapMode="word" onMouseUp={() => props.onChange?.()}>
+                {backend.loaded!.id}
+              </text>
+              <For each={detailOf(backend, props.data.throughput)}>
+                {(line) => (
+                  <text fg={props.theme.textMuted} wrapMode="word">
+                    {line}
+                  </text>
+                )}
+              </For>
+            </box>
+          )}
+        </For>
+      </Show>
       <Show when={props.onChange}>
         <text fg={props.theme.primary} wrapMode="none" onMouseUp={() => props.onChange?.()}>
           [change]
         </text>
       </Show>
-      <For each={detail()}>
-        {(line) => (
-          <text fg={props.theme.textMuted} wrapMode="none">
-            {line}
-          </text>
-        )}
-      </For>
     </box>
   )
 }
 
 /** Polls only while mounted, so a hidden panel costs nothing. */
 export function usePanelData(isRegistered?: () => boolean) {
-  const [data, setData] = createSignal<PanelData>({
-    backend: { id: "llamacpp", name: "llama.cpp" },
-    status: { state: "stopped" },
-    gpus: [],
-  })
+  const [data, setData] = createSignal<PanelData>({ backends: [], gpus: [] })
 
   async function refresh() {
     const [gpuStats, sysStat] = await Promise.all([gpus().catch(() => []), system().catch(() => undefined)])
-    const status = await probe().catch<ProviderStatus>(() => ({ state: "stopped" }))
-    setData((current) => ({
-      ...current,
+    const backends = await Promise.all(
+      BACKENDS.map(async (backend) => {
+        const status = await backend.status().catch<ProviderStatus>(() => ({ state: "stopped" }))
+        const loaded = status.state === "running" ? await backend.loaded().catch(() => undefined) : undefined
+        return { id: backend.id, name: backend.name, status, loaded }
+      }),
+    )
+    // an engine with no binary or no models directory is not configured;
+    // carrying it on screen forever is noise, and /localhost lists them all
+    setData({
+      backends: backends.filter((backend) => backend.status.state !== "unconfigured"),
       gpus: gpuStats,
       memory: sysStat,
-      status,
       registered: isRegistered?.() ?? true,
-    }))
+    })
   }
 
   createEffect(() => {
@@ -228,65 +271,4 @@ export function usePanelData(isRegistered?: () => boolean) {
   })
 
   return data
-}
-
-/**
- * The TUI half reads the backend directly rather than asking opencode, because
- * a server plugin cannot expose endpoints for it to ask. Documented limitation:
- * this breaks if the TUI ever runs on a different machine from the server.
- */
-async function probe(): Promise<ProviderStatus> {
-  const cfg = await Server.load()
-  if (!cfg.modelsDir) {
-    return {
-      state: "unconfigured",
-      missing: "models-dir",
-      message: "models-dir not set",
-      hint: `set it in ${collapseHome(Server.FILE)}`,
-    }
-  }
-  const host = cfg.host === "0.0.0.0" ? "127.0.0.1" : cfg.host
-  const baseURL = `http://${host}:${cfg.port}/v1`
-  try {
-    const res = await fetch(`${baseURL}/models`, {
-      signal: AbortSignal.timeout(1_500),
-      headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
-    })
-    if (!res.ok) return { state: "stopped" }
-    const body: any = await res.json()
-    const entries: any[] = Array.isArray(body?.data) ? body.data : []
-    // prefer whatever the server says is actually loading/loaded; fall back to
-    // any entry carrying launch args. Picking the first entry with args showed
-    // a stale model after a swap, since the previous one keeps its args.
-    const active =
-      entries.find((entry) => entry?.status?.status === "loading") ??
-      entries.find((entry) => entry?.status?.status === "loaded") ??
-      entries.find((entry) => entry?.status?.args)
-    if (!active) return { state: "running", endpoint: baseURL }
-    return {
-      state: "running",
-      endpoint: baseURL,
-      loaded: {
-        id: String(active.id ?? ""),
-        args: argsOf(active?.status?.args),
-        loading: active?.status?.status === "loading",
-      },
-    }
-  } catch {
-    return { state: "stopped" }
-  }
-}
-
-/** llama-server reports its launch flags as a flat argv array. */
-function argsOf(argv: unknown): Record<string, string> {
-  if (!Array.isArray(argv)) return {}
-  const out: Record<string, string> = {}
-  for (let i = 0; i < argv.length; i++) {
-    const token = String(argv[i])
-    if (!token.startsWith("--")) continue
-    const next = argv[i + 1]
-    if (next === undefined || String(next).startsWith("--")) continue
-    out[token.slice(2)] = String(next)
-  }
-  return out
 }

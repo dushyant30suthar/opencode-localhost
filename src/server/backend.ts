@@ -1,4 +1,4 @@
-import type { ProviderStatus } from "../shared/types.ts"
+import type { LoadedModel, ProviderStatus } from "../shared/types.ts"
 
 /**
  * What every backend implements. llama.cpp today; vLLM and OpenVINO are new
@@ -35,6 +35,9 @@ export interface Backend {
 
   /** Stops a server we started. Never touches one we did not spawn. */
   stop(): Promise<boolean>
+
+  /** What the server currently holds, if anything. Undefined when it is down. */
+  loaded(): Promise<LoadedModel | undefined>
 
   baseURL(): string
   apiKey(): string | undefined

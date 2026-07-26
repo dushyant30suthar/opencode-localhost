@@ -34,18 +34,26 @@ export type ProviderStatus =
   | { state: "running"; endpoint: string; loaded?: LoadedModel }
   | { state: "failed"; message: string; hint?: string }
 
-export type PanelData = {
-  backend: { id: string; name: string }
+/** One engine. A machine can have several, each its own opencode provider. */
+export type BackendPanel = {
+  id: string
+  name: string
   status: ProviderStatus
+  loaded?: LoadedModel
+}
+
+export type PanelData = {
   /**
-   * Whether opencode has actually picked up the provider. False while the
-   * server is up but opencode has not re-read its config — the one case where
-   * a restart is genuinely required, so the panel has to say so.
+   * Only backends the user has actually configured. Listing every engine we
+   * know about would put three dead rows on screen forever; /localhost is
+   * where the full list with install state lives.
    */
+  backends: BackendPanel[]
+  /** Whether opencode has picked any of these up as providers yet. */
   registered?: boolean
+  /** Shared: one GPU pool no matter how many engines are installed. */
   gpus: GpuStat[]
   memory?: SystemStat
-  cpu?: SystemStat
   /** Tokens per second, while generating. */
   throughput?: number
 }

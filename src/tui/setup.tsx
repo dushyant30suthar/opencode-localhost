@@ -2,9 +2,9 @@ import fs from "fs/promises"
 import { BACKENDS, allOnPath, expand, supported, type BackendSpec } from "../shared/backends.ts"
 import { collapseHome } from "../shared/paths.ts"
 import * as Server from "../server/llamacpp/server-ini.ts"
-import { create as llamacpp } from "../server/llamacpp/index.ts"
+import { BACKENDS as ENGINES } from "./backends.ts"
 
-const backend = llamacpp()
+const backend = ENGINES[0]!
 
 /**
  * Setup, kept separate from the status strip.

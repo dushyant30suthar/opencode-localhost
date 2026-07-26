@@ -1,16 +1,14 @@
 import { createEffect, createSignal, For, Show } from "solid-js"
 import { Hardware, Provider, Model, hardwareRows, usePanelData } from "./panel.tsx"
 import { openSetup } from "./setup.tsx"
-import { create as llamacpp } from "../server/llamacpp/index.ts"
-
-const backend = llamacpp()
+import { BACKENDS, backendById } from "./backends.ts"
 
 /**
  * Shared so the strip, the sidebar and the command all show the same busy
  * state — start can take twenty seconds and three views disagreeing about
  * whether it is running looks broken.
  */
-const [busy, setBusy] = createSignal(false)
+const [busy, setBusy] = createSignal<string | undefined>(undefined)
 
 /**
  * opencode's own model picker, rather than a second one of ours: selecting a
@@ -25,15 +23,18 @@ function openModelPicker(api: any) {
   }
 }
 
-async function toggleServer(running: boolean) {
+async function toggleServer(id: string) {
   if (busy()) return
-  setBusy(true)
+  const backend = backendById(id)
+  if (!backend) return
+  setBusy(id)
   try {
-    await (running ? backend.stop() : backend.start())
+    const status = await backend.status()
+    await (status.state === "running" ? backend.stop() : backend.start())
   } catch {
     // status reflects whatever actually happened on the next poll
   } finally {
-    setBusy(false)
+    setBusy(undefined)
   }
 }
 
@@ -59,8 +60,8 @@ async function toggleServer(running: boolean) {
  * prompt's 75-column max so it stays centred with everything else on the home
  * screen — full width made it hug the left edge while the prompt stayed centred.
  */
-const HARDWARE_WIDTH = 30
-const PROVIDER_WIDTH = 18
+const HARDWARE_WIDTH = 26
+const PROVIDER_WIDTH = 20
 
 /** One `│` per row, so the rule spans the whole block rather than its first line. */
 function Divider(props: { color: string; rows: number }) {
@@ -74,7 +75,8 @@ function Divider(props: { color: string; rows: number }) {
 
 /** opencode exposes the providers it loaded, which is how we detect the gap. */
 function registered(api: any) {
-  return () => (api.state?.provider ?? []).some((item: any) => item?.id === "llamacpp")
+  const known = new Set(BACKENDS.map((backend) => backend.id))
+  return () => (api.state?.provider ?? []).some((item: any) => known.has(item?.id))
 }
 
 /**
@@ -103,10 +105,10 @@ function requestReload(api: any): boolean {
  * Guarded because the reload is asynchronous: without it, every poll before
  * the provider list refreshes would fire another signal.
  */
-function useAutoReload(api: any, data: () => { status: { state: string }; registered?: boolean }) {
+function useAutoReload(api: any, data: () => { backends: { status: { state: string } }[]; registered?: boolean }) {
   let fired = false
   createEffect(() => {
-    const ready = data().status.state === "running"
+    const ready = data().backends.some((backend) => backend.status.state === "running")
     if (!ready || data().registered !== false) {
       // reset once opencode has caught up, so a later restart of the backend
       // can trigger exactly one more reload
@@ -129,12 +131,7 @@ function HomePanel(props: { api: any }) {
       </box>
       <Divider color={theme().border} rows={hardwareRows(data()) + 1} />
       <box width={PROVIDER_WIDTH} flexShrink={0} flexDirection="column">
-        <Provider
-          theme={theme()}
-          data={data()}
-          busy={busy()}
-          onToggle={() => void toggleServer(data().status.state === "running")}
-        />
+        <Provider theme={theme()} data={data()} busy={busy()} onToggle={(id) => void toggleServer(id)} />
       </box>
       <Divider color={theme().border} rows={hardwareRows(data()) + 1} />
       <box flexGrow={1} minWidth={20} flexDirection="column">
@@ -151,17 +148,9 @@ function SidebarPanel(props: { api: any }) {
     <box flexDirection="column">
       <Hardware theme={theme()} data={data()} />
       <box height={1} />
-      <Provider
-        theme={theme()}
-        data={data()}
-        stacked
-        busy={busy()}
-        onToggle={() => void toggleServer(data().status.state === "running")}
-      />
+      <Provider theme={theme()} data={data()} stacked busy={busy()} onToggle={(id) => void toggleServer(id)} />
       <box height={1} />
-      <Show when={data().status.state === "running"}>
-        <Model theme={theme()} data={data()} stacked onChange={() => openModelPicker(props.api)} />
-      </Show>
+      <Model theme={theme()} data={data()} stacked onChange={() => openModelPicker(props.api)} />
     </box>
   )
 }
@@ -183,9 +172,11 @@ const tui = async (api: any) => {
       title: "Local models: start/stop server",
       value: "localhost.server.toggle",
       category: "Provider",
-      onSelect: async () => {
-        const status = await backend.status().catch(() => undefined)
-        void toggleServer(status?.state === "running")
+      onSelect: () => {
+        // with one engine this is unambiguous; with several the setup screen
+        // is where you pick which, so this acts on the first configured one
+        const first = BACKENDS[0]
+        if (first) void toggleServer(first.id)
       },
     },
   ])

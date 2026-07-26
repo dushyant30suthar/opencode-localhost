@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { spawn } from "child_process"
 import { stateDir, collapseHome } from "../../shared/paths.ts"
-import type { ProviderStatus } from "../../shared/types.ts"
+import type { LoadedModel, ProviderStatus } from "../../shared/types.ts"
 import type { Backend, DiscoveredModel } from "../backend.ts"
 import * as Server from "./server-ini.ts"
 import * as Models from "./models-ini.ts"
@@ -212,13 +212,55 @@ export function create(): Backend {
     return true
   }
 
+  /** llama-server reports its launch flags as a flat argv array. */
+  function argsOf(argv: unknown): Record<string, string> {
+    if (!Array.isArray(argv)) return {}
+    const out: Record<string, string> = {}
+    for (let i = 0; i < argv.length; i++) {
+      const token = String(argv[i])
+      if (!token.startsWith("--")) continue
+      const next = argv[i + 1]
+      if (next === undefined || String(next).startsWith("--")) continue
+      out[token.slice(2)] = String(next)
+    }
+    return out
+  }
+
+  async function loaded(): Promise<LoadedModel | undefined> {
+    const cfg = await config()
+    try {
+      const res = await fetch(`${baseURL()}/models`, {
+        signal: AbortSignal.timeout(PROBE_TIMEOUT),
+        headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+      })
+      if (!res.ok) return undefined
+      const body: any = await res.json()
+      const entries: any[] = Array.isArray(body?.data) ? body.data : []
+      // prefer what the server says is loading/loaded: the previous model keeps
+      // its args after a swap, so "first entry with args" showed a stale name
+      const active =
+        entries.find((entry) => entry?.status?.status === "loading") ??
+        entries.find((entry) => entry?.status?.status === "loaded") ??
+        entries.find((entry) => entry?.status?.args)
+      if (!active) return undefined
+      return {
+        id: String(active.id ?? ""),
+        args: argsOf(active?.status?.args),
+        loading: active?.status?.status === "loading",
+      }
+    } catch {
+      return undefined
+    }
+  }
+
   return {
     id: Server.BACKEND,
-    name: "llama.cpp",
+    name: "Localhost-llama.cpp",
     status,
     models,
     start,
     stop,
+    loaded,
     baseURL,
     apiKey: () => settings?.apiKey || undefined,
   }
