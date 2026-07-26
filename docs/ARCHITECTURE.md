@@ -1,349 +1,272 @@
-# opencode-localhost — architecture
+# Architecture
 
-Local model providers for opencode, with live hardware telemetry.
-Replaces the `opencode` fork entirely. No fork, no patches.
+How opencode-localhost is put together, why it is split the way it is, and what
+adding another backend involves.
 
----
+## Contents
 
-## 1. What this is
+- [The shape of it](#the-shape-of-it)
+- [Vocabulary](#vocabulary)
+- [Source layout](#source-layout)
+- [The server half](#the-server-half)
+- [The terminal half](#the-terminal-half)
+- [Files on disk](#files-on-disk)
+- [Adding a backend](#adding-a-backend)
+- [Constraints worth knowing](#constraints-worth-knowing)
 
-One npm package containing **two opencode plugins**:
+## The shape of it
 
-| Plugin | Thread | Job |
+One package containing **two plugins**:
+
+| Plugin | Runs in | Responsibility |
 |---|---|---|
-| **server** | server worker | registers a provider whose models are discovered from disk; starts and supervises the model server |
-| **tui** | TUI main | draws the hardware / provider / model panel |
+| `./server` | opencode's server worker | discover models, run the backend, register the provider |
+| `./tui` | opencode's terminal thread | draw the panel, offer the controls |
 
-opencode forbids one module exporting both, so the package exposes them as two
-subpath exports and both config files reference the same package.
+They are separate because opencode enforces it — a module may export `server()`
+or `tui()`, never both. The package exposes them as subpath exports, and both
+of opencode's config files reference the same package.
 
-### What opencode actually sees
+The two halves do not talk to each other. A server plugin cannot expose
+endpoints, so the terminal half reads the backend directly rather than asking
+its own server side. See [Constraints](#constraints-worth-knowing).
 
-Only two things:
+**What opencode sees is only ever two things:** a provider with models under it,
+and content in two UI slots. Everything else — the model server process, the
+configuration files, `nvidia-smi`, VRAM — is invisible to it.
 
-1. a **provider** named `llama.cpp` with models under it
-2. **pixels** in two slots
+## Vocabulary
 
-Everything else — `llama-server`, the INI files, `nvidia-smi`, VRAM — is invisible to it.
-
----
-
-## 2. Terminology
-
-opencode's own words, taken from its source:
+opencode's own terms, used here with the same meanings:
 
 | Term | Meaning |
 |---|---|
-| **plugin** | a module opencode loads. Two kinds; **one module cannot be both** |
-| **server plugin** | `export default { id, server }`. Declared in `opencode.json` → `plugin: []` |
-| **TUI plugin** | `export default { id, tui }`. Declared in **`tui.json`** → `plugin: []` |
-| **hook** | a callback a server plugin implements — `config`, `chat.params`, `tool`, `event` |
-| **provider** | a named source of models: `{ id, name, source, options, models }` |
-| **config provider** | a provider declared in config — `source: "config"`. Ours is one of these |
-| **model** | `{ id, providerID, name, api{url,npm}, limit{context,output}, capabilities }` |
-| **slot** | a named UI insertion point — `home_bottom`, `sidebar_content`, … |
+| **plugin** | a module opencode loads; server-side or terminal-side |
+| **hook** | a callback a server plugin implements — `config`, `chat.params`, … |
+| **provider** | a named source of models, as it appears in the model picker |
+| **config provider** | a provider contributed through configuration rather than built in. This plugin's providers are these |
+| **slot** | a named UI insertion point — `home_bottom`, `sidebar_content` |
 
-Words opencode has no concept for, so we define them:
+Terms this project defines:
 
 | Term | Meaning |
 |---|---|
-| **backend** | llama.cpp, vLLM, OpenVINO — the thing that runs inference |
-| **model server** | the process itself (`llama-server`). Needs no name in the design; it's just a process we start |
+| **backend** | an inference engine: llama.cpp, vLLM, MLX, OpenVINO |
+| **model server** | the process a backend manages, e.g. `llama-server` |
 
-"Engine" is not used anywhere.
+Each backend becomes its own opencode provider, so a machine with several
+engines shows several providers.
 
----
-
-## 3. Two repositories
-
-The split follows one rule: **would this be wrong on someone else's machine?**
-If yes, it isn't package code.
-
-### `opencode-localhost` — the product
+## Source layout
 
 ```
-opencode-localhost/
-├── package.json                name · version · exports { "./server", "./tui" }
-├── README.md
+src/
+├── server/                  ── plugin 1: opencode's server worker
+│   ├── index.ts               config() and chat.params hooks
+│   ├── backend.ts             the interface every backend implements
+│   └── llamacpp/
+│       ├── index.ts           detect · start · stop · report
+│       ├── discover.ts        find .gguf files under a directory
+│       ├── models-ini.ts      per-model settings, in llama.cpp's preset format
+│       └── server-ini.ts      how the server is run; builds its argv
 │
-├── src/
-│   ├── server/                 ── PLUGIN 1 · server thread ──
-│   │   ├── index.ts              export default { id, server }
-│   │   ├── provider.ts           turns a backend into a config provider
-│   │   ├── backend.ts            the interface every backend implements
-│   │   ├── llamacpp/
-│   │   │   ├── index.ts          detect · spawn · probe · report
-│   │   │   ├── discover.ts       scan models-dir for GGUFs
-│   │   │   ├── models-ini.ts     read/write models.ini + generic defaults
-│   │   │   ├── server-ini.ts     read server.ini → CLI flags
-│   │   │   └── status.ts         /models/sse, load progress
-│   │   └── vllm/                 same interface, later
-│   │
-│   ├── tui/                    ── PLUGIN 2 · TUI thread ──
-│   │   ├── index.ts              export default { id, tui }
-│   │   ├── panel.tsx             the three sections
-│   │   ├── home.tsx              home_bottom layout
-│   │   ├── sidebar.tsx           sidebar_content layout
-│   │   └── hardware/
-│   │       ├── nvidia.ts         nvidia-smi
-│   │       └── system.ts         RAM · CPU
-│   │
-│   └── shared/
-│       ├── paths.ts              where config and state live
-│       └── types.ts              display types both halves use
+├── tui/                     ── plugin 2: opencode's terminal thread
+│   ├── index.tsx              slot registration, commands, layout
+│   ├── panel.tsx              the three sections, and the shared data source
+│   ├── setup.tsx              the /localhost screen
+│   ├── backends.ts            shared backend instances
+│   └── hardware/
+│       ├── nvidia.ts          GPU memory and utilisation
+│       └── system.ts          RAM and CPU
 │
-└── docs/
+└── shared/
+    ├── backends.ts            the engines this plugin knows about
+    ├── ini.ts                 an INI reader that preserves comments
+    ├── paths.ts               where configuration and state live
+    └── types.ts               shapes both halves use
 ```
 
-No submodules. No build scripts. No benchmark data. Nothing machine-specific.
+## The server half
 
-### `opencode-llama.cpp` — the rig
+### Registering a provider
 
-The existing repo, minus the package.
-
-```
-opencode-llama.cpp/
-├── llama.cpp/            submodule → ggml-org/llama.cpp   (pin: c588c4f47 / b10103)
-├── scripts/              build-llama · download-models · tune-model
-├── bench/                sweeps and results
-├── config/               this machine's server.ini / models.ini, backed up
-└── docs/                 how this rig is set up
-```
-
-Deleted: `scripts/build-opencode.sh`, the `opencode/` submodule, and the
-fork-feature docs (`no-self-update.md`, `zero-config-provider.md`, `upgrading.md`).
-
----
-
-## 4. Files on a user's machine
+opencode loads plugins before reading its provider configuration, so a plugin's
+`config()` hook can contribute to it. That is the whole integration:
 
 ```
-~/.config/opencode/
-├── opencode.jsonc      plugin: ["opencode-localhost"]
-├── tui.jsonc           plugin: ["opencode-localhost"]
-└── providers/
-    └── llamacpp/
-        ├── server.ini      daemon settings
-        └── models.ini      per-model settings
-
-~/.local/state/opencode/providers/llamacpp/
-├── server.pid
-└── server.log
+config() hook
+   │
+   ├─ read server.ini      where is the binary, where are the models
+   ├─ scan models-dir      find .gguf files
+   ├─ sync models.ini      append a section for anything new
+   └─ write provider into the config opencode is about to read
 ```
 
-Nothing user-specific ships in the package. The package is read-only and
-identical for everyone.
+From there it is an ordinary provider and opencode treats it like any other.
 
-### `server.ini` — ours
+A backend contributes only when it is **configured** — a binary and a models
+directory. Whether a server happens to be running is deliberately not part of
+that test: the models exist on disk either way, and a picker that stays empty
+until you find and press a start button is indistinguishable from a plugin that
+does not work.
 
-We read it and build llama-server's command line. Changing it restarts the daemon.
+### Starting the model server
 
-```ini
-[server]
-bin        = llama-server          ; $PATH, or an absolute path
-models-dir = ~/.lmstudio/models     ; probed on first run, then written here
-host       = 0.0.0.0
-port       = 9337
-api-key    = <generated>
-models-max = 1
-web        = off
-```
-
-`models-dir` is **probed, then recorded**. The package checks a few known
-layouts, writes whichever it found into this file, and never assumes again —
-so the path is always visible and editable, never a hidden default.
-
-### `models.ini` — llama.cpp's
-
-Passed to `llama-server --models-preset` **verbatim**. We generate a section
-when a new GGUF appears and never touch it again. Changing a section reloads
-that model.
-
-```ini
-[lmstudio-community/Qwen3.6-35B-A3B-GGUF]
-model        = /home/…/Qwen3.6-35B-A3B-Q4_K_M.gguf
-mmproj       = /home/…/mmproj-Qwen3.6-35B-A3B-BF16.gguf
-ctx-size     = 245760
-ubatch-size  = 2048
-gpu-layers   = 99
-flash-attn   = on
-cache-type-k = q8_0
-cache-type-v = q8_0
-temp         = 0.6
-top-p        = 0.95
-```
-
-Sampling stays here. The plugin reads it and supplies it per request through
-`chat.params`, so opencode's own sampling heuristics never override it.
-
-vLLM gets `~/.config/opencode/providers/vllm/` with its own two files in its
-own formats. Same split, different syntax.
-
----
-
-## 5. How a model reaches the picker
+Nothing is spawned when opencode launches. The `chat.params` hook runs before
+every request, and starts the backend there if it is not already up:
 
 ```
-server plugin  config() hook
-      │
-      ├─ read server.ini → find llama-server, models-dir
-      ├─ scan models-dir → GGUFs
-      ├─ read/extend models.ini → per-model launch settings
-      ├─ spawn llama-server --models-preset models.ini
-      └─ write provider into config.provider["llamacpp"]
-                    │
-                    ▼
-opencode reads cfg.provider → provider appears with its models
+first message → chat.params → backend not running → start it → request proceeds
 ```
 
-The `config()` hook is the load-bearing mechanism. opencode loads plugins
-*first*, specifically so their `config()` hook can modify config before
-providers are read — the code comment says so, and the spike proved it.
+opencode awaits that hook, so the request cannot fire before the server is
+listening. Sending a message is treated as sufficient intent; the panel's
+`[start]` and `[stop]` are there for deciding explicitly.
 
----
+### Sampling
 
-## 6. The panel
+`chat.params` also applies per-model sampling read from `models.ini`.
 
-Three sections in priority order: **hardware → provider → model**.
-Numbers only, no bar glyphs, right-aligned so digits stack.
+Sampling is deliberately *not* baked into the server's launch flags. As request
+parameters it takes effect on the next message rather than the next model load,
+it can differ per agent, and it overrides opencode's own per-model heuristics,
+which know nothing about local models.
 
-### Home — `home_bottom`, 75 columns
+## The terminal half
 
-```
- HARDWARE      memory  compute │ PROVIDER       │ MODEL
- GPU0     14.2/16.0G      87%  │ llama.cpp      │ Qwen3.6-35B-A3B
- GPU1     13.8/16.0G      82%  │ ● running      │ 245760 ctx · q8_0 KV
- CPU      18.1/31.0G      24%  │ :9337 web off  │ ngl 99 · 68.2 tok/s
-```
+### The panel
 
-Hardware is a device × metric grid — three devices, two metrics each. The CPU
-row reuses the same two columns (its memory is system RAM, its compute is CPU
-utilization), so the headers hold for all three rows.
+Three sections, defined once and used by both layouts. The home strip arranges
+them in columns; the session sidebar stacks them. Only a `stacked` prop and the
+wrapper differ.
 
-### Session — `sidebar_content`, 42 columns
-
-```
- HARDWARE      memory  compute
- GPU0     14.2/16.0G      87%
- GPU1     13.8/16.0G      82%
- CPU      18.1/31.0G      24%
-
- PROVIDER
- llama.cpp
- ● running · :9337
- web off
-
- MODEL
- Qwen3.6-35B-A3B
- 245760 ctx · q8_0 KV
- ngl 99 · split 0.67/0.33
- 68.2 tok/s
-```
-
-The hardware grid is 30 columns wide in both layouts — **literally the same
-component**, not two layouts to keep in sync.
-
-### States
-
-```
-loading    │ ◐ loading   │ Qwen3.6-35B-A3B
-           │ :9337       │ 68%  weights
-stopped    │ ○ stopped   │ no model loaded
-           │ [start]     │
-failed     │ ✕ failed    │ not enough VRAM
-```
-
-Hardware keeps updating in every state.
-
-### Color
-
-| Element | Token |
+| Section | Scales how |
 |---|---|
-| memory value | `text` → `warning` ≥90% → `error` ≥97% |
-| compute value | `text` always — a pinned GPU is the goal, never an alarm |
-| labels, units, `·`, `/` | `textMuted` |
-| status glyph + word | `success` / `warning` / `error` / `textMuted` |
+| **HARDWARE** | fixed. GPUs are a shared pool however many engines exist |
+| **PROVIDER** | one entry per configured engine, each with its own control |
+| **MODEL** | one entry per loaded model, naming its engine only when more than one is loaded |
 
-**State is never colour alone.** The glyph shape carries it (`●` `◐` `○` `✕`)
-*and* a word follows — works on a monochrome terminal and for a colourblind
-reader.
+The strip keeps the prompt's width and grows downward rather than sideways, so
+it stays aligned with everything else on the home screen.
 
-### Liveness
+### Where the data comes from
 
-- **model status** — llama-server's `/models/sse`. Push, not poll
-- **hardware** — `nvidia-smi` every 2s while visible, stopped when not
+A single shared source, not a per-component hook — the home strip and the
+session sidebar are separate components, and a hook would mean two polling
+loops, two event subscriptions and two `nvidia-smi` calls whenever both were
+alive. The first mount starts the work; the last one stops it.
 
-### Narrow terminals
+Two channels, because one is not enough:
 
-```
-< 64 cols   drop the RAM row, abbreviate
-< 48 cols   one line:  ● llama.cpp · Qwen3.6-35B · 87%/82%
-```
-
----
-
-## 7. Verified by execution
-
-A throwaway plugin was run against a real opencode.
-
-| # | Assumption | Result |
+| Channel | Carries | Why |
 |---|---|---|
-| 1 | `config()` can inject a provider absent from models.dev | ✅ proven |
-| 2 | external plugin registers into `home_bottom` / `sidebar_content` | ✅ proven |
-| 3 | `chat.params` overrides sampling | ✅ proven **on the wire** |
-| 4 | plugin can observe model selection | ❌ not available |
+| **poll** (2s) | hardware, server state, loaded model | there is no push interface for `nvidia-smi` |
+| **stream** (SSE) | load progress | the REST listing flips *unloaded* to *loaded* at the end and says nothing in between |
 
-Evidence for #3 — captured request body from a fake OpenAI endpoint:
+Polling tightens to 500ms while a load is in flight and relaxes afterwards, so
+an idle panel is close to free.
+
+### Registration refresh
+
+opencode reads its configuration once per instance and offers no endpoint to
+re-read it. A provider that was not ready at startup would therefore not appear
+until the next launch.
+
+Its terminal binds `SIGUSR2` to a configuration invalidation, and a terminal
+plugin runs inside that process — so the panel signals itself once a backend
+becomes available, and the provider registers without a restart. This is only
+done from the home screen: the reload disposes live instances, which is
+acceptable before you start work and disruptive in the middle of a session.
+
+## Files on disk
 
 ```
-model      : spike-alpha
-temperature: 0.123        ← the plugin's value, not opencode's
+~/.config/opencode/providers/<backend>/     configuration — yours to edit
+~/.local/state/opencode/providers/<backend>/    pidfile, log — ours
 ```
 
-### Things learned that weren't in the plan
+Configuration follows XDG so it sits beside opencode's own, which is where
+people look for it. State holds files a program owns and a human never edits.
 
-- **A plugin exports `server()` or `tui()` — never both.** Enforced at load.
-- **TUI plugins are not auto-discovered.** `.opencode/plugin/*.ts` is
-  server-only. TUI plugins must be declared in **`tui.json` / `tui.jsonc`**,
-  a separate file from `opencode.json`. Undocumented.
-- **Declaring a TUI plugin in `opencode.json`** makes the server host log a
-  load error on every startup. Keep them in their own files.
-- **A provider ID does not need a schema enum entry.** `ProviderV2.ID.make()`
-  accepts any string.
+Nothing machine-specific ships in the package. Paths are recorded in
+configuration at runtime, never compiled in — a default that is right on one
+machine is wrong on the next, and a wrong path silently costs performance
+rather than failing loudly.
 
----
+## Adding a backend
 
-## 8. Known limitations
+A backend implements one interface:
 
-**No warm-on-select.** `TuiState` exposes providers, sessions and parts but not
-the currently selected model, and `TuiEventBus` carries only server events —
-model selection is TUI-local state. So a model can't start loading the moment
-you pick it; it loads on the first message instead.
+```ts
+interface Backend {
+  readonly id: string            // also its configuration directory name
+  readonly name: string          // short, for the panel
+  readonly providerName: string  // how it appears in the model picker
 
-Replacement: the panel lists models and clicking one loads it. Explicit, and it
-works mid-conversation with a cloud model, which the fork's version could not.
+  status(): Promise<ProviderStatus>
+  models(): Promise<DiscoveredModel[]>
+  start(): Promise<ProviderStatus>
+  stop(): Promise<boolean>
+  loaded(): Promise<LoadedModel | undefined>
+  watch(onEvent: (event: LoadEvent) => void): () => void
 
-**Remote TUI.** The TUI half reads `nvidia-smi` and port 9337 directly, so if
-the TUI ever runs on a different machine from the server, the panel goes blank.
-Fixing it means routing telemetry through the server half, which is not
-possible today — a server plugin cannot register HTTP endpoints.
+  baseURL(): string
+  apiKey(): string | undefined
+}
+```
 
----
+Everything engine-specific stays behind it: configuration format, discovery
+layout, launch flags, how progress is reported. Nothing outside the folder
+needs to know that llama.cpp uses INI presets while another engine uses YAML.
 
-## 9. What the fork did, and where it goes
+To add one:
 
-| Fork change | Replacement |
-|---|---|
-| `provider/llamastack.ts` custom loader | `config()` hook injects a config provider |
-| `provider.ts` detect hook | same |
-| `schema/provider.ts` enum entry | not needed |
-| `transform.ts` sampling suppression ×3 | `chat.params` supplies sampling |
-| `registry.ts` websearch | `OPENCODE_ENABLE_EXA=1` |
-| `builtins.ts` sidebar registration | external TUI plugin |
-| `app.tsx` `/config` command | deleted — edit the file |
-| `prompt/index.tsx` load status | folded into the panel |
-| `installation/*` self-update guard | **not needed** — stock binary, nothing to protect |
-| `upgrade-stack.ts` | script in the rig repo, llama.cpp only |
+1. create `src/server/<backend>/` implementing the interface
+2. give it a configuration file in **that engine's own native format**, under
+   `~/.config/opencode/providers/<backend>/`
+3. add it to the list in `src/shared/backends.ts` with its binary name and
+   install command
+4. add the instance to `src/tui/backends.ts`
 
-The self-update guard existed because a fork binary would be overwritten by
-stock opencode. With no fork, you *are* stock opencode.
+The panel, the provider registration, the setup screen and the commands all
+adapt on their own. Each backend becomes its own provider, so several can run
+side by side.
+
+Backends are listed in the setup screen whether or not they are installed,
+with what installing them would take. They are never installed for you:
+llama.cpp ships a native binary while the others are Python packages, so there
+is no single thing to fetch, and choosing the wrong llama.cpp build — CUDA
+version, GPU architecture — quietly costs a large multiple of performance.
+
+## Constraints worth knowing
+
+These shaped the design and are not obvious from the code.
+
+**A module exports `server()` or `tui()`, never both.** Enforced at load. Hence
+two entry points from one package.
+
+**Terminal plugins are declared in a different file.** Server plugins can be
+auto-discovered from `.opencode/plugin/`; terminal plugins must be listed in
+`tui.json` / `tui.jsonc`. Listing a terminal plugin in `opencode.json` makes the
+server host log a load error on every start.
+
+**Terminal plugins cannot be installed by package name.** opencode resolves an
+npm plugin against a wrapper `package.json` it generates, which has no `exports`
+field, so the terminal entry point is never found and is skipped silently. The
+server entry survives on a different fallback. Referencing the package by
+directory avoids this.
+
+**Plugins cannot see the selected model.** The terminal's state exposes
+providers, sessions and messages, but not the current model — that is local UI
+state. This is why there is no warm-on-select, and why `[change]` dispatches
+opencode's own picker rather than offering its own: a custom list could display
+models but never switch to one.
+
+**Plugins cannot take keyboard focus.** Tab is bound to cycling agents and slot
+content is not in a focus ring plugins can join, so panel controls are reachable
+by mouse or by binding the registered commands.
+
+**The two halves cannot call each other.** A server plugin cannot register HTTP
+endpoints, so the terminal half reads the backend directly. This is the reason
+the panel goes blank when the terminal runs on a different machine from the
+model server.

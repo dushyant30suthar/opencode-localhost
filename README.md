@@ -1,28 +1,78 @@
 # opencode-localhost
 
-Run local models in [opencode](https://opencode.ai). Your `.gguf` files show up
-in the model picker as an ordinary provider, `llama-server` is started and
-supervised for you, and a panel shows GPU, VRAM and CPU while you work.
+[![npm](https://img.shields.io/npm/v/opencode-localhost)](https://www.npmjs.com/package/opencode-localhost)
+[![license](https://img.shields.io/badge/license-MIT-blue)](./LICENSE)
+
+Run local models in [opencode](https://opencode.ai).
+
+Your GGUF files appear in the model picker like any other provider.
+`llama-server` is started, supervised and stopped for you. A panel keeps GPU,
+VRAM and CPU on screen while you work.
 
 ```
- HARDWARE      memory  compute │ PROVIDER       │ MODEL
- GPU0     14.2/16.0G      87%  │ llama.cpp      │ Qwen3.6-35B-A3B
- GPU1     13.8/16.0G      82%  │ ● running      │ 245760 ctx · q8_0 KV
- CPU      18.1/31.0G      24%  │ :9337 web off  │ ngl 99 · 68.2 tok/s
+ HARDWARE     memory  compute │ llama.cpp         │ lmstudio-community/
+ GPU0     14.3/15.9G      87% │ ● 127.0.0.1:9337  │ Qwen3.6-35B-A3B-GGUF
+ GPU1     13.7/15.9G      82% │ [stop]            │ 245760 ctx · q8_0 KV
+ CPU      10.8/31.2G      31% │                   │ [change]
 ```
 
-No fork of opencode, no patches. It is a plugin.
+It is a plugin. It does not fork or patch opencode.
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [First run](#first-run)
+- [Configuration](#configuration)
+- [Daily use](#daily-use)
+- [Troubleshooting](#troubleshooting)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
+
+## What it does
+
+**Discovers your models.** Scans a directory you choose for `.gguf` files,
+including nested layouts like `<publisher>/<repo>/model.gguf`, and registers
+each one — every quantisation as its own entry.
+
+**Runs the server.** Starts `llama-server` on your first message and keeps it
+running. Nothing is spawned at launch; `[start]` and `[stop]` are in the panel
+when you want to decide yourself.
+
+**Reports the truth about context.** opencode compacts a conversation against
+the model's advertised window. The context you configure per model is what gets
+advertised, so a model loaded at 245k is not compacted as though it were 32k.
+
+**Shows what the hardware is doing.** Per-GPU memory and utilisation, system RAM
+and CPU, the loaded model with its launch flags, and live progress while weights
+stream into VRAM.
+
+**Keeps settings in llama.cpp's own format.** Per-model options live in a
+standard llama.cpp preset file, passed to `llama-server` unmodified. Any flag
+llama.cpp accepts works, whether or not this plugin knows about it.
 
 ## Requirements
 
-- opencode
-- a `llama-server` binary — [build it](https://github.com/ggml-org/llama.cpp) or
-  install it however you like, then make sure it is on `$PATH`
-- some `.gguf` files
+| | |
+|---|---|
+| **opencode** | tested against 1.18.5; older versions are untested |
+| **llama-server** | build [llama.cpp](https://github.com/ggml-org/llama.cpp) yourself, or install it (`brew install llama.cpp`, a release archive, your package manager) |
+| **models** | one or more `.gguf` files in a directory |
+| **GPU stats** | optional. NVIDIA only; without it the hardware rows are simply omitted |
 
-## Install
+## Installation
 
-opencode loads server-side and TUI plugins separately, so it goes in two files.
+Clone the repository and install its dependencies:
+
+```sh
+git clone https://github.com/dushyant30suthar/opencode-localhost
+cd opencode-localhost
+bun install
+```
+
+Then point opencode at the directory. It goes in **two files**, because opencode
+loads server-side and terminal-side plugins through separate hosts:
 
 ```jsonc
 // ~/.config/opencode/opencode.jsonc
@@ -34,58 +84,91 @@ opencode loads server-side and TUI plugins separately, so it goes in two files.
 { "plugin": ["/absolute/path/to/opencode-localhost"] }
 ```
 
-```sh
-git clone https://github.com/dushyant30suthar/opencode-localhost
-cd opencode-localhost && bun install
+> **Why a path rather than the package name?**
+>
+> The package is published to npm, but installing it by name currently gives
+> you the provider without the panel. opencode resolves an npm plugin against a
+> wrapper `package.json` it generates in `~/.cache/opencode/packages/`, which
+> carries no `exports` field, so the terminal-side entry point is never found
+> and is skipped without an error. The server-side entry survives on a
+> different fallback, which makes the result look half-broken rather than
+> unconfigured.
+>
+> Referencing the directory avoids that resolution path entirely. When opencode
+> resolves npm plugins against the real package, `{ "plugin":
+> ["opencode-localhost"] }` will work with no change here.
+
+## First run
+
+Start opencode. The panel appears below the prompt and reports what is missing:
+
+```
+ HARDWARE     memory  compute │ llama.cpp         │ no model loaded
+ GPU0      0.4/15.9G      12% │ ✕ not set up      │ [change]
+ GPU1      0.4/15.9G       1% │ models-dir not set│
+ CPU       7.1/31.2G      16% │                   │
 ```
 
-**Why a path and not the package name?** On opencode 1.18.5, a TUI plugin
-installed by name never loads. opencode resolves an npm plugin against the
-wrapper `package.json` it generates in `~/.cache/opencode/packages/<name>@latest/`,
-which has no `exports` field — so `exports["./tui"]` is never found and the TUI
-half is skipped silently. The server half survives on a fallback path, which
-makes it look like the provider works but the panel is broken. Referencing the
-package by path avoids that resolution entirely.
+Run `/localhost` and set two things:
 
-Start opencode. The panel appears under the prompt and tells you what is still
-missing.
+```
+ ✓ llama.cpp          /usr/local/bin/llama-server
+ ✗ vLLM               not installed — pip install vllm
+ ✗ MLX                Apple Silicon only
+ ✗ OpenVINO           not installed — pip install openvino-genai
+ ✓ Models directory   ~/models
+ ○ Server stopped   [start]   127.0.0.1:9337
+```
 
-## Setup
+- **llama.cpp** — every `llama-server` found on `$PATH`, plus *Enter a path…*
+  for a build that is not on it
+- **Models directory** — where your `.gguf` files live
 
-On first run it writes `~/.config/opencode/providers/llamacpp/server.ini`.
-Exactly one thing has no sensible default:
+Nothing is guessed. `$PATH` is searched for the binary and nothing else; the
+models directory has no default, because only you know where it is.
+
+Once both are set the models appear in the picker within a couple of seconds.
+No restart.
+
+## Configuration
+
+Two files, both under `~/.config/opencode/providers/llamacpp/`.
+
+### `server.ini` — how the server is run
+
+Written on first start. Read by this plugin, which builds `llama-server`'s
+command line from it.
 
 ```ini
 [server]
-bin =                              # empty = look on $PATH
-models-dir = ~/models              # ← set this
-host = 127.0.0.1
-port = 9337
+bin        = /usr/local/bin/llama-server
+models-dir = ~/models
+host       = 127.0.0.1
+port       = 9337
 models-max = 1
-api-key =
+api-key    =
 ```
 
-Set `models-dir` and save. No restart: the panel notices within a couple of
-seconds, scans your models, generates `models.ini`, starts `llama-server`, and
-asks opencode to re-read its config so the provider appears in the picker.
+| Key | Meaning |
+|---|---|
+| `bin` | path to `llama-server`. Empty means search `$PATH` |
+| `models-dir` | directory to scan for `.gguf` files. Required |
+| `host` | `127.0.0.1` keeps the server on this machine |
+| `port` | listen port |
+| `models-max` | how many models may occupy VRAM at once. `1` swaps instead of stacking |
+| `api-key` | when set, `llama-server` enforces bearer auth |
 
-Nothing is guessed. If `llama-server` is not on `$PATH`, set `bin` — the panel
-says so rather than failing silently.
+### `models.ini` — how each model is loaded
 
-## Per-model settings
+Generated for you the first time your models are scanned. This is a standard
+llama.cpp preset file, handed to `llama-server --models-preset` unmodified.
 
-`~/.config/opencode/providers/llamacpp/models.ini` is written **for you**, the
-first time your models are scanned — you never create it by hand. It is a
-llama.cpp preset file, handed to `llama-server --models-preset` verbatim. A
-section is appended when a new `.gguf` appears and **never modified
-afterwards** — it is yours.
-
-The section name is the model id, so renaming a section is safe: it keeps
-governing its file, and its settings keep being used.
+A section is appended when a new `.gguf` appears and **is never edited
+afterwards**. It is yours.
 
 ```ini
 [unsloth/Qwen3.6-35B-A3B-GGUF]
-model        = /path/to/Qwen3.6-35B-A3B-Q4_K_M.gguf
+model        = /home/you/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-Q4_K_M.gguf
 ctx-size     = 245760
 ubatch-size  = 2048
 gpu-layers   = 99
@@ -98,46 +181,109 @@ top-p        = 0.95
 
 Any `llama-server` flag works as a key, without the leading dashes.
 
-Two different lifecycles:
+The section name is the model's identity. Renaming a section is safe — it keeps
+governing its file and its settings keep being used.
+
+Two settings have different lifecycles:
 
 | Change | Takes effect |
 |---|---|
-| launch flags — `ctx-size`, `gpu-layers`, `tensor-split`, `cache-type-*` | next model load |
+| launch flags — `ctx-size`, `gpu-layers`, `tensor-split`, `cache-type-*` | next time the model loads |
 | sampling — `temp`, `top-p`, `top-k`, `min-p` | next message, no reload |
 
-Sampling is sent per request rather than baked into the server, so opencode's
-own per-model defaults never override what you set here.
+Sampling is attached to each request rather than baked into the server process,
+so opencode's own per-model defaults never override what you set here, and
+changing it does not cost a reload.
 
-`ctx-size` is also what opencode compacts against — set it to what the model
-really loads with, or long conversations will compact far too early.
+`ctx-size` is also what opencode compacts against. Set it to what the model
+really loads with, or long conversations will compact far earlier than they
+need to.
 
-## Adding another backend
+## Daily use
 
-`src/server/llamacpp/` implements `src/server/backend.ts`. vLLM or anything else
-is a sibling folder implementing the same three methods — discover models, start
-the server, say where it is. Its own config file, in its own native format,
-under `~/.config/opencode/providers/<backend>/`.
+Open the model picker (`/model`, or `[change]` in the panel) and choose a model
+under **Localhost-llama.cpp**.
 
-## Security
+Send a message. The first one is slow — that is the server starting and the
+weights streaming into VRAM. The panel shows it:
 
-`host` defaults to `127.0.0.1`, so the server is reachable only from this
-machine. If you set `0.0.0.0` to use it from elsewhere on your network, set
-`api-key` as well — `llama-server` then enforces bearer auth, and any
-OpenAI-compatible client can connect with it.
+```
+ HARDWARE     memory  compute │ llama.cpp         │ ◐ unsloth/
+ GPU0      8.1/15.9G      64% │ ● 127.0.0.1:9337  │ Laguna-S-2.1-GGUF
+ GPU1      7.4/15.9G      61% │ [stop]            │ ████░░░░░░ 43%
+ CPU      11.2/31.2G      38% │                   │ text_model
+```
+
+Subsequent messages are warm.
+
+The same panel appears in the session sidebar, stacked rather than in columns.
+
+**Controls**
+
+| | |
+|---|---|
+| `[start]` / `[stop]` | run or stop the server |
+| `[change]` | opencode's model picker |
+| `/localhost` | paths and server state |
+| `ctrl+p` → *Local models* | the same actions, from the command palette |
+
+Both actions are registered commands (`localhost.server.toggle` and opencode's
+`model.list`), so they can be bound to keys in your keybinds config.
+
+## Troubleshooting
+
+**The panel is missing entirely.** The terminal-side plugin is not loading.
+Check `tui.jsonc` exists and points at the directory — it is a separate file
+from `opencode.jsonc` and easy to miss. Confirm `bun install` has been run in
+the clone; the panel needs its own dependencies.
+
+**No provider in the model picker.** The engine is not configured. Run
+`/localhost` — a backend with no binary or no models directory does not
+register. If both are set and the picker is still empty, no `.gguf` files were
+found under `models-dir`.
+
+**A model fails to load and retries.** The server log has the reason:
+
+```sh
+tail -40 ~/.local/state/opencode/providers/llamacpp/server.log
+```
+
+The usual cause is a path in `models.ini` that `llama-server` cannot open.
+Paths must be absolute — `llama-server` does not expand `~`.
+
+**Conversations compact too early.** `ctx-size` for that model does not match
+what it actually loads with. The panel shows the value in effect.
+
+**Settings changed but nothing happened.** Launch flags apply on the next model
+load, not immediately. Stop and start the server, or switch models and back.
 
 ## Limitations
 
-- **Provider refresh only happens from the home screen.** opencode's only
-  reload path disposes live instances, so it is not fired mid-session; the
-  panel shows **restart opencode** in that case instead.
-- **No warm-on-select.** opencode's TUI does not expose the selected model to
-  plugins, so a model starts loading on your first message rather than the
-  moment you pick it.
-- **Local only.** The panel reads `nvidia-smi` and the server directly, so it
-  goes blank if the TUI runs on a different machine from opencode.
-- **NVIDIA only** for GPU stats. Everything else works without a GPU; the
-  hardware rows are simply omitted.
+**No warm-on-select.** opencode does not expose the selected model to plugins,
+so a model begins loading on your first message rather than the moment you pick
+it.
+
+**Local only.** The panel reads `nvidia-smi` and the server directly, so it goes
+blank if the terminal runs on a different machine from the model server.
+
+**NVIDIA only for GPU statistics.** Everything else works without a GPU; the
+hardware rows are omitted.
+
+**llama.cpp only, for now.** The architecture is backend-agnostic and the setup
+screen lists vLLM, MLX and OpenVINO with their install state, but only llama.cpp
+is implemented.
+
+## Contributing
+
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) covers how the two halves fit
+together, the constraints opencode's plugin API imposes, and what implementing
+another backend involves.
+
+```sh
+bun install
+bunx tsc --noEmit -p tsconfig.json
+```
 
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE).
