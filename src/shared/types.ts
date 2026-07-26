@@ -21,6 +21,8 @@ export type LoadedModel = {
   loading?: boolean
   /** 0-1 while weights stream in. */
   progress?: number
+  /** Which stage is streaming, e.g. "text_model" or "mmproj". */
+  stage?: string
 }
 
 /**

@@ -243,10 +243,16 @@ export function create(): Backend {
         entries.find((entry) => entry?.status?.status === "loaded") ??
         entries.find((entry) => entry?.status?.args)
       if (!active) return undefined
+      // llama-server reports load progress as {stages, current, value} while
+      // weights stream in; value is 0-1 for the stage named by `current`
+      const progress = active?.status?.progress
+      const value = typeof progress?.value === "number" ? progress.value : undefined
       return {
         id: String(active.id ?? ""),
         args: argsOf(active?.status?.args),
         loading: active?.status?.status === "loading",
+        progress: value,
+        stage: typeof progress?.current === "string" ? progress.current : undefined,
       }
     } catch {
       return undefined

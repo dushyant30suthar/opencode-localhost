@@ -17,6 +17,8 @@ import { BACKENDS } from "./backends.ts"
  */
 
 const POLL_MS = 2_000
+/** While weights stream in, 2s makes the bar jump in visible steps. */
+const POLL_LOADING_MS = 500
 const MIB_PER_GIB = 1024
 
 type Theme = Record<string, any>
@@ -178,9 +180,22 @@ export function Provider(props: {
   )
 }
 
+/** A tenth-width bar: enough to read at a glance, cheap in a 25-column column. */
+function bar(fraction: number) {
+  const filled = Math.max(0, Math.min(10, Math.round(fraction * 10)))
+  return "█".repeat(filled) + "░".repeat(10 - filled)
+}
+
 function detailOf(backend: BackendPanel, throughput?: number) {
   const model = backend.loaded
   if (!model) return []
+  // while weights stream in there are no launch flags to report yet, and the
+  // thing worth showing is how far along it is
+  if (model.loading) {
+    const pct = model.progress === undefined ? undefined : Math.round(model.progress * 100)
+    const line = pct === undefined ? "loading…" : `${bar(model.progress!)} ${pct}%`
+    return [line, model.stage ?? ""].filter(Boolean)
+  }
   const args = model.args
   const first: string[] = []
   if (args["ctx-size"]) first.push(`${args["ctx-size"]} ctx`)
@@ -218,8 +233,12 @@ export function Model(props: { theme: Theme; data: PanelData; stacked?: boolean;
                 </text>
               </Show>
               {/* ids carry a publisher prefix; wrap rather than truncate */}
-              <text fg={props.theme.text} wrapMode="word" onMouseUp={() => props.onChange?.()}>
-                {backend.loaded!.id}
+              <text
+                fg={backend.loaded!.loading ? props.theme.warning : props.theme.text}
+                wrapMode="word"
+                onMouseUp={() => props.onChange?.()}
+              >
+                {backend.loaded!.loading ? `◐ ${backend.loaded!.id}` : backend.loaded!.id}
               </text>
               <For each={detailOf(backend, props.data.throughput)}>
                 {(line) => (
@@ -264,9 +283,12 @@ export function usePanelData(isRegistered?: () => boolean) {
     })
   }
 
+  // poll faster while something is loading, so the bar moves smoothly, and
+  // drop back afterwards so an idle panel costs almost nothing
   createEffect(() => {
+    const loading = data().backends.some((backend) => backend.loaded?.loading)
     void refresh()
-    const timer = setInterval(() => void refresh(), POLL_MS)
+    const timer = setInterval(() => void refresh(), loading ? POLL_LOADING_MS : POLL_MS)
     onCleanup(() => clearInterval(timer))
   })
 
