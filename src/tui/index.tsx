@@ -174,9 +174,17 @@ const tui = async (api: any) => {
       category: "Provider",
       onSelect: () => {
         // with one engine this is unambiguous; with several the setup screen
-        // is where you pick which, so this acts on the first configured one
-        const first = BACKENDS[0]
-        if (first) void toggleServer(first.id)
+        // is where you pick which, so this acts on the first configured one —
+        // literally the first in the list would toggle an engine the user may
+        // never have set up while their configured one sits untouched
+        void (async () => {
+          for (const engine of BACKENDS) {
+            const state = await engine.status().catch(() => undefined)
+            if (state && state.state !== "unconfigured") return void toggleServer(engine.id)
+          }
+          const first = BACKENDS[0]
+          if (first) void toggleServer(first.id)
+        })()
       },
     },
   ])

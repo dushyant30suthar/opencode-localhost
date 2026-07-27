@@ -159,13 +159,23 @@ export async function load(): Promise<ServerSettings> {
   }
 }
 
-/** Writes one key back, preserving comments and everything else in the file. */
-export async function update(key: "bin" | "models-dir" | "model", value: string): Promise<void> {
+export { looksRemote } from "../../shared/backends.ts"
+
+/**
+ * Writes one key back, preserving comments and everything else in the file.
+ *
+ * Setting `bin` clears `remote` and vice versa: they are the two answers to one
+ * question — run a server here, or use one over there — and leaving the other
+ * behind means the file says both and the reader has to guess which wins.
+ */
+export async function update(key: "bin" | "models-dir" | "model" | "remote", value: string): Promise<void> {
   const text = await fs.readFile(FILE, "utf8").catch(() => TEMPLATE)
   const doc = Ini.parse(text)
   const section = Ini.find(doc, "server")
   if (!section) return
-  Ini.set(section, key, collapseHome(value))
+  if (key === "remote") Ini.set(section, "bin", "")
+  if (key === "bin" && value) Ini.set(section, "remote", "")
+  Ini.set(section, key, key === "remote" ? value : collapseHome(value))
   await fs.mkdir(path.dirname(FILE), { recursive: true }).catch(() => {})
   await fs.writeFile(FILE, Ini.serialize(doc)).catch(() => {})
 }

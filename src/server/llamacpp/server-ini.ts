@@ -91,20 +91,10 @@ export async function load(): Promise<ServerSettings> {
 }
 
 /**
- * A path means "run a server here"; an address means "use the one over there".
- * One field answers both, because from the user's side it is one question — where
- * does inference happen — and asking it twice invites a config that says both.
- *
- * Anything with a scheme, or a host:port, or a bare hostname that is clearly not
- * a path, is an address. A leading / or ~ is always a path.
+ * Re-exported so callers that already import it from here keep working. The
+ * implementation moved to shared/ once a second backend needed the same answer.
  */
-export function looksRemote(input: string): boolean {
-  const text = input.trim()
-  if (!text) return false
-  if (text.startsWith("/") || text.startsWith("~") || text.startsWith(".")) return false
-  if (/^https?:\/\//i.test(text)) return true
-  return /^[a-z0-9][a-z0-9.-]*(:\d+)?$/i.test(text) && (text.includes(":") || text.includes("."))
-}
+export { looksRemote } from "../../shared/backends.ts"
 
 /**
  * Writes one key back, preserving comments and everything else in the file.

@@ -1,10 +1,7 @@
 import fs from "fs/promises"
-import { BACKENDS, allOnPath, expand, supported, type BackendSpec } from "../shared/backends.ts"
+import { BACKENDS, allOnPath, expand, normalizeRemote, supported, type BackendSpec } from "../shared/backends.ts"
 import { collapseHome } from "../shared/paths.ts"
-import * as Server from "../server/llamacpp/server-ini.ts"
-import { BACKENDS as ENGINES } from "./backends.ts"
-
-const backend = ENGINES[0]!
+import { backendById, configById, type BackendConfig } from "./backends.ts"
 
 /**
  * Setup, kept separate from the status strip.
@@ -15,6 +12,11 @@ const backend = ENGINES[0]!
  *
  * Built from DialogSelect and DialogPrompt rather than a hand-rolled screen, so
  * filtering, keyboard navigation and theming come from opencode itself.
+ *
+ * Every row is scoped to one backend. Nothing here may reach for a specific
+ * engine's settings module: while llama.cpp was the only implemented one this
+ * screen loaded its config for every row, so a second backend showed — and
+ * edited — llama.cpp's paths under its own name.
  */
 
 type Row = {
@@ -31,7 +33,7 @@ async function isFile(file: string): Promise<boolean> {
   return !!stat?.isFile()
 }
 
-async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Promise<Row> {
+async function backendRow(spec: BackendSpec, cfg: BackendConfig | undefined, api: any, reopen: () => void): Promise<Row> {
   if (!supported(spec)) {
     return {
       title: `${MISSING} ${spec.name}`,
@@ -39,7 +41,9 @@ async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Prom
       run: () => api.ui.toast({ message: `${spec.name} requires macOS on Apple Silicon`, variant: "info" }),
     }
   }
-  if (!spec.implemented) {
+  // No settings module is the same situation as not implemented: there is
+  // nothing this screen could read or write for it.
+  if (!spec.implemented || !cfg) {
     const found = await allOnPath(spec.binary)
     return {
       title: `${found.length > 0 ? OK : MISSING} ${spec.name}`,
@@ -52,8 +56,8 @@ async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Prom
     }
   }
 
-  // llama.cpp: the configured path wins, otherwise whatever is on $PATH
-  const settings = await Server.load()
+  // the configured path wins, otherwise whatever is on $PATH
+  const settings = await cfg.load()
 
   // Pointed at another machine: a missing local binary is the expected state,
   // not a problem to flag. Reporting "not found" here sends people hunting for
@@ -62,7 +66,7 @@ async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Prom
     return {
       title: `${OK} ${spec.name}`,
       description: `using ${settings.remote} — no local server`,
-      run: () => promptBinaryOrRemote(api, spec, settings.remote, reopen),
+      run: () => promptBinaryOrRemote(api, spec, cfg, settings.remote, reopen),
     }
   }
 
@@ -73,7 +77,7 @@ async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Prom
   return {
     title: `${active ? OK : MISSING} ${spec.name}`,
     description: active ? collapseHome(active) : `not found — ${spec.install}`,
-    run: () => chooseBinary(api, spec, found, active, reopen),
+    run: () => chooseBinary(api, spec, cfg, found, active, reopen),
   }
 }
 
@@ -82,7 +86,14 @@ async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Prom
  * release binary — so this offers the ones it found and always allows typing
  * a path, rather than assuming the first hit on $PATH is the wanted one.
  */
-function chooseBinary(api: any, spec: BackendSpec, found: string[], active: string | undefined, reopen: () => void) {
+function chooseBinary(
+  api: any,
+  spec: BackendSpec,
+  cfg: BackendConfig,
+  found: string[],
+  active: string | undefined,
+  reopen: () => void,
+) {
   const options = [
     ...found.map((file) => ({
       title: collapseHome(file),
@@ -101,14 +112,21 @@ function chooseBinary(api: any, spec: BackendSpec, found: string[], active: stri
       options={options}
       current={active}
       onSelect={(option: { value: string }) => {
-        if (option.value === "__custom__") return promptBinaryOrRemote(api, spec, active ?? "", reopen)
-        void Server.update("bin", option.value).then(reopen)
+        if (option.value === "__custom__") return promptBinaryOrRemote(api, spec, cfg, active ?? "", reopen)
+        void cfg.update("bin", option.value).then(reopen)
       }}
     />
   ))
 }
 
-function promptPath(api: any, title: string, value: string, key: "bin" | "models-dir", reopen: () => void) {
+function promptPath(
+  api: any,
+  cfg: BackendConfig,
+  title: string,
+  value: string,
+  key: "bin" | "models-dir",
+  reopen: () => void,
+) {
   api.ui.dialog.replace(() => (
     <api.ui.DialogPrompt
       title={title}
@@ -117,7 +135,7 @@ function promptPath(api: any, title: string, value: string, key: "bin" | "models
       onConfirm={(next: string) => {
         const resolved = expand(next)
         if (!resolved) return reopen()
-        void Server.update(key, resolved).then(reopen)
+        void cfg.update(key, resolved).then(reopen)
       }}
       onCancel={reopen}
     />
@@ -129,22 +147,19 @@ function promptPath(api: any, title: string, value: string, key: "bin" | "models
  * stops managing a process entirely — no binary, no models directory, no models.ini
  * on this machine; the model list comes from that server.
  */
-function promptBinaryOrRemote(api: any, spec: BackendSpec, value: string, reopen: () => void) {
+function promptBinaryOrRemote(api: any, spec: BackendSpec, cfg: BackendConfig, value: string, reopen: () => void) {
   api.ui.dialog.replace(() => (
     <api.ui.DialogPrompt
       title={`Path to ${spec.binary}, or an address`}
       value={collapseHome(value)}
-      placeholder="~/llama.cpp/build/bin/llama-server  —  or  fedora.local:9337"
+      placeholder={`~/…/${spec.binary}  —  or  fedora.local:9337`}
       onConfirm={(next: string) => {
         const text = (next ?? "").trim()
         if (!text) return reopen()
-        if (Server.looksRemote(text)) {
-          const addr = text.replace(/^https?:\/\//i, "").replace(/\/+$/, "")
-          return void Server.update("remote", addr).then(reopen)
-        }
+        if (cfg.looksRemote(text)) return void cfg.update("remote", normalizeRemote(text)).then(reopen)
         const resolved = expand(text)
         if (!resolved) return reopen()
-        void Server.update("bin", resolved).then(reopen)
+        void cfg.update("bin", resolved).then(reopen)
       }}
       onCancel={reopen}
     />
@@ -152,38 +167,52 @@ function promptBinaryOrRemote(api: any, spec: BackendSpec, value: string, reopen
 }
 
 async function rows(api: any, reopen: () => void): Promise<Row[]> {
-  const settings = await Server.load()
   const out: Row[] = []
 
-  for (const spec of BACKENDS) out.push(await backendRow(spec, api, reopen))
+  for (const spec of BACKENDS) {
+    const cfg = configById(spec.id)
+    out.push(await backendRow(spec, cfg, api, reopen))
 
-  // A remote serves its own models, so there is nothing here to scan. Showing
-  // "not set — required" would be false: it is neither set nor needed.
-  if (!settings.remote) {
-    const dir = settings.modelsDir
-    const exists = dir ? await fs.stat(dir).then((s) => s.isDirectory()).catch(() => false) : false
+    const engine = backendById(spec.id)
+    if (!cfg || !engine || !spec.implemented || !supported(spec)) continue
+    const settings = await cfg.load()
+
+    // A remote serves its own models, so there is nothing here to scan. Showing
+    // "not set — required" would be false: it is neither set nor needed.
+    if (!settings.remote) {
+      const dir = settings.modelsDir
+      const exists = dir ? await fs.stat(dir).then((s) => s.isDirectory()).catch(() => false) : false
+      out.push({
+        // Titles double as the select's values, so they carry the backend name:
+        // two engines both offering "Models directory" would collide and the
+        // wrong one would open.
+        title: `  ${exists ? OK : MISSING} ${spec.name} models directory`,
+        description: dir ? `${collapseHome(dir)}${exists ? "" : " — not found"}` : "not set — required",
+        run: () => promptPath(api, cfg, `${spec.name} models directory`, dir, "models-dir", reopen),
+      })
+    }
+
+    const status = await engine.status().catch(() => undefined)
+    const running = status?.state === "running"
+    const where = settings.remote || `${settings.host}:${settings.port}`
+
+    // the action is on the row itself — selecting it starts or stops, rather
+    // than opening a submenu to find the one obvious thing to do
     out.push({
-      title: `${exists ? OK : MISSING} Models directory`,
-      description: dir ? `${collapseHome(dir)}${exists ? "" : " — not found"}` : "not set — required",
-      run: () => promptPath(api, "Models directory", dir, "models-dir", reopen),
+      title: running ? `  ● ${spec.name} running   [stop]` : `  ○ ${spec.name} stopped   [start]`,
+      description: settings.remote ? `${where} — remote, not ours to start or stop` : where,
+      run: async () => {
+        api.ui.toast({ message: running ? "stopping…" : "starting…", variant: "info" })
+        const ok = await (running ? engine.stop() : engine.start()).catch(() => undefined)
+        // stop() answering false is meaningful on a remote: OVMS has no unload
+        // endpoint, so there is nothing this machine can do about that GPU.
+        if (running && ok === false && settings.remote) {
+          api.ui.toast({ message: `${where} is not ours to stop`, variant: "info" })
+        }
+        reopen()
+      },
     })
   }
-
-  const status = await backend.status().catch(() => undefined)
-  const running = status?.state === "running"
-
-  // the action is on the row itself — selecting it starts or stops, rather
-  // than opening a submenu to find the one obvious thing to do
-  out.push({
-    title: running ? "● Server running   [stop]" : "○ Server stopped   [start]",
-    description: `${settings.host}:${settings.port}`,
-    run: async () => {
-      api.ui.toast({ message: running ? "stopping…" : "starting…", variant: "info" })
-      await (running ? backend.stop() : backend.start()).catch(() => {})
-      reopen()
-    },
-  })
-
 
   return out
 }

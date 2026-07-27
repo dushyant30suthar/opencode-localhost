@@ -102,3 +102,28 @@ export function expand(value: string): string {
   if (trimmed.startsWith("~/")) return path.join(os.homedir(), trimmed.slice(2))
   return trimmed
 }
+
+/**
+ * A path means "run a server here"; an address means "use the one over there".
+ * One field answers both, because from the user's side it is one question —
+ * where does inference happen — and asking it twice invites a config that says
+ * both.
+ *
+ * Anything with a scheme, or a host:port, or a bare hostname that is clearly
+ * not a path, is an address. A leading / or ~ is always a path.
+ *
+ * Lives here rather than beside one backend's settings because every backend
+ * that can point at another machine needs the same answer.
+ */
+export function looksRemote(input: string): boolean {
+  const text = input.trim()
+  if (!text) return false
+  if (text.startsWith("/") || text.startsWith("~") || text.startsWith(".")) return false
+  if (/^https?:\/\//i.test(text)) return true
+  return /^[a-z0-9][a-z0-9.-]*(:\d+)?$/i.test(text) && (text.includes(":") || text.includes("."))
+}
+
+/** Bare host:port, however the user typed it. */
+export function normalizeRemote(input: string): string {
+  return input.trim().replace(/^https?:\/\//i, "").replace(/\/+$/, "")
+}
