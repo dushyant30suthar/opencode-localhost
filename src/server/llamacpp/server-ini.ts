@@ -90,13 +90,37 @@ export async function load(): Promise<ServerSettings> {
   }
 }
 
-/** Writes one key back, preserving comments and everything else in the file. */
-export async function update(key: "bin" | "models-dir", value: string): Promise<void> {
+/**
+ * A path means "run a server here"; an address means "use the one over there".
+ * One field answers both, because from the user's side it is one question — where
+ * does inference happen — and asking it twice invites a config that says both.
+ *
+ * Anything with a scheme, or a host:port, or a bare hostname that is clearly not
+ * a path, is an address. A leading / or ~ is always a path.
+ */
+export function looksRemote(input: string): boolean {
+  const text = input.trim()
+  if (!text) return false
+  if (text.startsWith("/") || text.startsWith("~") || text.startsWith(".")) return false
+  if (/^https?:\/\//i.test(text)) return true
+  return /^[a-z0-9][a-z0-9.-]*(:\d+)?$/i.test(text) && (text.includes(":") || text.includes("."))
+}
+
+/**
+ * Writes one key back, preserving comments and everything else in the file.
+ *
+ * Setting `bin` clears `remote` and vice versa: they are the two answers to one
+ * question — run a server here, or use one over there — and leaving the other
+ * behind means the file says both and the reader has to guess which wins.
+ */
+export async function update(key: "bin" | "models-dir" | "remote", value: string): Promise<void> {
   const text = await fs.readFile(FILE, "utf8").catch(() => TEMPLATE)
   const doc = Ini.parse(text)
   const section = Ini.find(doc, "server")
   if (!section) return
-  Ini.set(section, key, collapseHome(value))
+  if (key === "remote") Ini.set(section, "bin", "")
+  if (key === "bin" && value) Ini.set(section, "remote", "")
+  Ini.set(section, key, key === "remote" ? value : collapseHome(value))
   await fs.mkdir(path.dirname(FILE), { recursive: true }).catch(() => {})
   await fs.writeFile(FILE, Ini.serialize(doc)).catch(() => {})
 }

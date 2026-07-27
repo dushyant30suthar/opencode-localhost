@@ -54,6 +54,18 @@ async function backendRow(spec: BackendSpec, api: any, reopen: () => void): Prom
 
   // llama.cpp: the configured path wins, otherwise whatever is on $PATH
   const settings = await Server.load()
+
+  // Pointed at another machine: a missing local binary is the expected state,
+  // not a problem to flag. Reporting "not found" here sends people hunting for
+  // something they deliberately do not need.
+  if (settings.remote) {
+    return {
+      title: `${OK} ${spec.name}`,
+      description: `using ${settings.remote} — no local server`,
+      run: () => promptBinaryOrRemote(api, spec, settings.remote, reopen),
+    }
+  }
+
   const configured = settings.bin && (await isFile(settings.bin)) ? settings.bin : undefined
   const found = await allOnPath(spec.binary)
   const active = configured ?? found[0]
@@ -77,7 +89,11 @@ function chooseBinary(api: any, spec: BackendSpec, found: string[], active: stri
       value: file,
       description: file === active ? "in use" : undefined,
     })),
-    { title: "Enter a path…", value: "__custom__", description: `e.g. a local build of ${spec.binary}` },
+    {
+      title: "Enter a path or an address…",
+      value: "__custom__",
+      description: `a local build of ${spec.binary}, or another machine e.g. fedora.local:9337`,
+    },
   ]
   api.ui.dialog.replace(() => (
     <api.ui.DialogSelect
@@ -85,7 +101,7 @@ function chooseBinary(api: any, spec: BackendSpec, found: string[], active: stri
       options={options}
       current={active}
       onSelect={(option: { value: string }) => {
-        if (option.value === "__custom__") return promptPath(api, "Path to " + spec.binary, active ?? "", "bin", reopen)
+        if (option.value === "__custom__") return promptBinaryOrRemote(api, spec, active ?? "", reopen)
         void Server.update("bin", option.value).then(reopen)
       }}
     />
@@ -108,19 +124,50 @@ function promptPath(api: any, title: string, value: string, key: "bin" | "models
   ))
 }
 
+/**
+ * One prompt, two destinations. Typing an address writes `remote` and the backend
+ * stops managing a process entirely — no binary, no models directory, no models.ini
+ * on this machine; the model list comes from that server.
+ */
+function promptBinaryOrRemote(api: any, spec: BackendSpec, value: string, reopen: () => void) {
+  api.ui.dialog.replace(() => (
+    <api.ui.DialogPrompt
+      title={`Path to ${spec.binary}, or an address`}
+      value={collapseHome(value)}
+      placeholder="~/llama.cpp/build/bin/llama-server  —  or  fedora.local:9337"
+      onConfirm={(next: string) => {
+        const text = (next ?? "").trim()
+        if (!text) return reopen()
+        if (Server.looksRemote(text)) {
+          const addr = text.replace(/^https?:\/\//i, "").replace(/\/+$/, "")
+          return void Server.update("remote", addr).then(reopen)
+        }
+        const resolved = expand(text)
+        if (!resolved) return reopen()
+        void Server.update("bin", resolved).then(reopen)
+      }}
+      onCancel={reopen}
+    />
+  ))
+}
+
 async function rows(api: any, reopen: () => void): Promise<Row[]> {
   const settings = await Server.load()
   const out: Row[] = []
 
   for (const spec of BACKENDS) out.push(await backendRow(spec, api, reopen))
 
-  const dir = settings.modelsDir
-  const exists = dir ? await fs.stat(dir).then((s) => s.isDirectory()).catch(() => false) : false
-  out.push({
-    title: `${exists ? OK : MISSING} Models directory`,
-    description: dir ? `${collapseHome(dir)}${exists ? "" : " — not found"}` : "not set — required",
-    run: () => promptPath(api, "Models directory", dir, "models-dir", reopen),
-  })
+  // A remote serves its own models, so there is nothing here to scan. Showing
+  // "not set — required" would be false: it is neither set nor needed.
+  if (!settings.remote) {
+    const dir = settings.modelsDir
+    const exists = dir ? await fs.stat(dir).then((s) => s.isDirectory()).catch(() => false) : false
+    out.push({
+      title: `${exists ? OK : MISSING} Models directory`,
+      description: dir ? `${collapseHome(dir)}${exists ? "" : " — not found"}` : "not set — required",
+      run: () => promptPath(api, "Models directory", dir, "models-dir", reopen),
+    })
+  }
 
   const status = await backend.status().catch(() => undefined)
   const running = status?.state === "running"
