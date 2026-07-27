@@ -22,12 +22,15 @@ export const FILE = path.join(configDir(BACKEND), "server.ini")
 
 /**
  * 65536 is well below the 262144 these checkpoints advertise, but far above
- * what a default OVMS config can actually serve — see cache-interval-multiplier.
+ * what a default OVMS config can actually serve — see cache_interval_multiplier
+ * in the servable's graph.pbtxt, which is where that is set.
  * The real ceiling is the KV cache, not the checkpoint, and it scales with
- * cache-size: measured on an Arc 140T with a 19.7GB MoE at cache-size 4, a
+ * graph.pbtxt's cache_size: measured on an Arc 140T with a 19.7GB MoE at
+ * cache_size 4, a
  * 13.8k-token prompt answered and a 19.2k-token prompt came back empty (at
- * cache-size 6 the ceiling sat between 19k and 39k, but that footprint left
- * too little RAM and throughput collapsed — see cache-size above). Over-context does not error — OVMS returns HTTP 200 with
+ * cache_size 6 the ceiling sat between 19k and 39k, but that footprint left
+ * too little RAM and throughput collapsed). Over-context does not error —
+ * OVMS returns HTTP 200 with
  * an empty completion — so reporting the checkpoint's number would have
  * opencode compact against a window it cannot actually serve, and the failure
  * would look like the model refusing to answer.
@@ -55,19 +58,30 @@ const TEMPLATE = `# OpenVINO Model Server settings for opencode-localhost.
 #               --rest_bind_address, whose own default is 0.0.0.0 — so leaving
 #               this at 127.0.0.1 is what actually makes it loopback-only
 #   port        OVMS REST port
-#   cache-interval  REQUIRED for long context on hybrid models (Qwen3.6 etc).
-#               OVMS checkpoints the whole fp32 recurrent state every
-#               kv_block_size * this. The default of 8 makes those snapshots
-#               dwarf the KV cache: measured 267 KiB/token, so ~15k context.
+#   context     window to advertise to opencode. keep it under what the KV cache
+#               can actually hold — going over returns an empty reply, not an
+#               error, so too high looks like the model refusing to answer
+#
+# CACHE TUNING IS NOT HERE. ovms-serve takes no flags for it — OVMS reads
+# cache_size and cache_interval_multiplier from the servable's graph.pbtxt, and
+# this plugin passes only a model name and lets the wrapper resolve that file.
+# Edit it there. Both settings used to appear below and did nothing, which was
+# worse than absent: the panel displayed a cache size the server was not using.
+#
+# What to put in graph.pbtxt, measured on an Arc 140T with a 19.7GB MoE:
+#
+#   cache_interval_multiplier  REQUIRED for long context on hybrid models
+#               (Qwen3.6 etc). OVMS checkpoints the whole fp32 recurrent state
+#               every kv_block_size * this. The default of 8 makes those
+#               snapshots dwarf the KV cache: 267 KiB/token, so ~15k context.
 #               At 128 it is 33 KiB/token and 90k prompts answer in seconds.
 #               openvino.genai PR #4050 fixes the underlying bug in 2026.3.
-#   cache-size  KV cache, in GB. this caps your context AND your footprint:
-#               model + cache must leave room for the OS. measured on a 30GB
-#               box with a 19.7GB model, 6 left 3GB free and throughput fell
-#               from 28 to 5 tok/s; 4 leaves ~9GB free and runs at full speed
-#   context     window to advertise to opencode. keep it under what cache-size
-#               can hold — going over returns an empty reply, not an error
-#   api-key     leave empty for localhost-only
+#   cache_size  KV cache in GB. Caps context AND footprint: model + cache must
+#               leave room for the OS. On a 30GB box, 6 left 3GB free and
+#               throughput fell from 28 to 5 tok/s; 4 leaves ~9GB free and runs
+#               at full speed. Context ceiling scales with it — at 4 a 13.8k
+#               prompt answered and 19.2k came back empty; at 6 the ceiling sat
+#               between 19k and 39k.
 #
 # Sampling is per-request, so editing it takes effect on the next message.
 # The values below are Qwen's published "precise coding" preset.
@@ -79,8 +93,6 @@ model =
 remote =
 host = 127.0.0.1
 port = 8100
-cache-size = 4
-cache-interval = 128
 context = ${DEFAULT_CONTEXT}
 api-key =
 
@@ -97,8 +109,6 @@ export type ServerSettings = {
   remote: string
   host: string
   port: number
-  cacheSize: number
-  cacheInterval: number
   context: number
   apiKey: string
   sampling: Record<string, number>
@@ -111,8 +121,6 @@ const DEFAULTS: ServerSettings = {
   remote: "",
   host: "127.0.0.1",
   port: 8100,
-  cacheSize: 4,
-  cacheInterval: 128,
   context: DEFAULT_CONTEXT,
   apiKey: "",
   sampling: {},
@@ -151,8 +159,6 @@ export async function load(): Promise<ServerSettings> {
     remote: (raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
     host: (raw["host"] || DEFAULTS.host).trim(),
     port: number(raw["port"], DEFAULTS.port),
-    cacheSize: number(raw["cache-size"], DEFAULTS.cacheSize),
-    cacheInterval: number(raw["cache-interval"], DEFAULTS.cacheInterval),
     context: number(raw["context"], DEFAULTS.context),
     apiKey: (raw["api-key"] ?? "").trim(),
     sampling,

@@ -390,9 +390,12 @@ export function create(): Backend {
    */
   async function loaded(): Promise<LoadedModel | undefined> {
     const cfg = await config()
+    // Only what we actually control. cache-size used to be shown here from
+    // server.ini while OVMS read its own value from graph.pbtxt — so the panel
+    // would confidently report a cache size the server was not using, which is
+    // worse than showing nothing.
     const args: Record<string, string> = {
       device: "GPU",
-      "cache-size": `${cfg.cacheSize}G`,
       context: String(cfg.context),
     }
     const id = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
