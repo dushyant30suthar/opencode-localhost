@@ -44,7 +44,10 @@ const TEMPLATE = `# OpenVINO Model Server settings for opencode-localhost.
 #   model       which one to serve. empty = the only one, if there is only one
 #               OVMS holds one model per process, so this is a real choice:
 #               changing it and restarting is how you switch models
-#   host        127.0.0.1 keeps it on this machine
+#   host        127.0.0.1 keeps it on this machine; 0.0.0.0 serves the LAN so
+#               another machine can point at it. This is passed to OVMS as
+#               --rest_bind_address, whose own default is 0.0.0.0 — so leaving
+#               this at 127.0.0.1 is what actually makes it loopback-only
 #   port        OVMS REST port
 #   cache-interval  REQUIRED for long context on hybrid models (Qwen3.6 etc).
 #               OVMS checkpoints the whole fp32 recurrent state every
@@ -159,7 +162,12 @@ export async function update(key: "bin" | "models-dir" | "model", value: string)
 /**
  * ovms-serve's command line. The wrapper resolves the servable directory from
  * the model name itself, so the name is positional and comes first.
+ *
+ * `--rest_bind_address` is not optional. OVMS defaults it to 0.0.0.0, so
+ * without it every server is on the LAN whatever `host` says — and this file
+ * tells the reader that 127.0.0.1 "keeps it on this machine". Passing it makes
+ * that true instead of aspirational.
  */
 export function argv(settings: ServerSettings, model: string): string[] {
-  return [model, "--rest_port", String(settings.port)]
+  return [model, "--rest_port", String(settings.port), "--rest_bind_address", settings.host]
 }

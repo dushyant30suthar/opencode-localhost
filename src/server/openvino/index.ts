@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import os from "os"
 import { spawn } from "child_process"
 import { stateDir, collapseHome } from "../../shared/paths.ts"
 import type { LoadEvent, LoadedModel, ProviderStatus } from "../../shared/types.ts"
@@ -156,6 +157,26 @@ export function create(): Backend {
   // /v1/config and 404s for models and chat.
   const baseURL = () => `http://${host()}:${port()}/v3`
 
+  /**
+   * Where *other* machines reach this server, or undefined when it is
+   * loopback-only. baseURL() stays loopback even on 0.0.0.0 — that is how this
+   * machine connects — so without this nothing on screen tells you the address
+   * to put in a second machine's config.
+   *
+   * Prefers the mDNS name: the IPv4 moves on DHCP renewal and the hostname does
+   * not, so `fedora.local` is the address worth writing down. The IP comes
+   * along because mDNS is not reliable on every client.
+   */
+  const lanAddress = () => {
+    if (settings?.host !== "0.0.0.0") return undefined
+    const ipv4 = Object.values(os.networkInterfaces())
+      .flat()
+      .find((nic) => nic && nic.family === "IPv4" && !nic.internal)?.address
+    const name = os.hostname()
+    if (name && ipv4) return `${name}.local:${port()} (${ipv4})`
+    return ipv4 ? `${ipv4}:${port()}` : undefined
+  }
+
   async function resolveBin(cfg: Server.ServerSettings): Promise<string | undefined> {
     if (cfg.bin) return (await executable(cfg.bin)) ? cfg.bin : undefined
     const found = await onPath()
@@ -184,7 +205,7 @@ export function create(): Backend {
       }
     }
     if (await ready(host(), port(), PROBE_TIMEOUT)) {
-      return { state: "running", endpoint: baseURL() }
+      return { state: "running", endpoint: baseURL(), lan: lanAddress() }
     }
     return { state: "stopped" }
   }
@@ -255,7 +276,7 @@ export function create(): Backend {
     const deadline = Date.now() + START_TIMEOUT
     while (Date.now() < deadline) {
       if (await ready(host(), port(), PROBE_TIMEOUT)) {
-        return { state: "running", endpoint: baseURL() }
+        return { state: "running", endpoint: baseURL(), lan: lanAddress() }
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL))
     }
@@ -429,7 +450,7 @@ export function create(): Backend {
       const bin = await resolveBin(cfg)
       if (!bin || !cfg.modelsDir) return status()
       if (await ready(host(), port(), PROBE_TIMEOUT)) {
-        return { state: "running", endpoint: baseURL() } as ProviderStatus
+        return { state: "running", endpoint: baseURL(), lan: lanAddress() } as ProviderStatus
       }
       return launch(cfg, bin)
     })()
