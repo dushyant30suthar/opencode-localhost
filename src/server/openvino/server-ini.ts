@@ -21,19 +21,24 @@ export const BACKEND = "openvino"
 export const FILE = path.join(configDir(BACKEND), "server.ini")
 
 /**
- * 65536 is well below the 262144 these checkpoints advertise, but far above
- * what a default OVMS config can actually serve — see cache_interval_multiplier
- * in the servable's graph.pbtxt, which is where that is set.
- * The real ceiling is the KV cache, not the checkpoint, and it scales with
- * graph.pbtxt's cache_size: measured on an Arc 140T with a 19.7GB MoE at
- * cache_size 4, a
- * 13.8k-token prompt answered and a 19.2k-token prompt came back empty (at
- * cache_size 6 the ceiling sat between 19k and 39k, but that footprint left
- * too little RAM and throughput collapsed). Over-context does not error —
- * OVMS returns HTTP 200 with
- * an empty completion — so reporting the checkpoint's number would have
- * opencode compact against a window it cannot actually serve, and the failure
- * would look like the model refusing to answer.
+ * 65536 is well below the 262144 these checkpoints advertise, and deliberately
+ * conservative: what OVMS can actually serve depends on two values this file
+ * does not control — cache_size and cache_interval_multiplier, both in the
+ * servable's graph.pbtxt.
+ *
+ * Which of the two dominates depends on the multiplier, so neither can be
+ * called "the real ceiling" on its own. At the default of 8 the fp32 recurrent
+ * checkpoints dwarf the KV cache; raise it far enough and the checkpoint term
+ * shrinks toward nothing and KV alone sets the floor. Measured on an Arc 140T
+ * at cache_size 4 and multiplier 128: the 19.7GB MoE served 90,615 tokens,
+ * while the dense 27B — 2.4x the checkpoint, 3.2x the KV — answered 44,215 and
+ * returned empty at 90,617.
+ *
+ * Over-context does not error: OVMS returns HTTP 200 with an empty completion.
+ * So advertising a window the server cannot serve makes opencode compact
+ * against it, and the failure looks like the model refusing to answer. Hence a
+ * default that is safe on both, to be raised only once you have actually served
+ * that length.
  */
 const DEFAULT_CONTEXT = 65_536
 
@@ -74,7 +79,23 @@ const TEMPLATE = `# OpenVINO Model Server settings for opencode-localhost.
 #               (Qwen3.6 etc). OVMS checkpoints the whole fp32 recurrent state
 #               every kv_block_size * this. The default of 8 makes those
 #               snapshots dwarf the KV cache: 267 KiB/token, so ~15k context.
-#               At 128 it is 33 KiB/token and 90k prompts answer in seconds.
+#               THE RIGHT VALUE IS PER MODEL. It scales with the checkpoint,
+#               and both terms come out of the model's own config.json:
+#                 checkpoint  = linear_layers * linear_num_value_heads
+#                             * linear_key_head_dim * linear_value_head_dim * 4
+#                 KV KiB/tok  = full_attn_layers * num_key_value_heads
+#                             * head_dim * 2          (1 byte each at u8)
+#                 KiB/token   = checkpoint / (kv_block_size * this) + KV
+#               Qwen3.6-35B-A3B: 63.8 MiB checkpoint, 10.0 KiB/tok of KV. At
+#               128 that is 33 KiB/token and 90,615 answered in seconds.
+#               Qwen3.6-27B: 151.5 MiB and 32.0 KiB/tok — 2.4x and 3.2x more.
+#               The same 128 gives 107.8 KiB/token and caps near 38k: measured,
+#               44,215 answered and 90,617 came back empty. It needs 1024+.
+#               Copying another model's number is the easy way to lose most of
+#               your context and think the model is refusing to answer.
+#               Raising this has a floor: the checkpoint term shrinks toward
+#               nothing and KV alone caps you. At cache_size 4 that is ~128k
+#               for the 27B and ~409k for the 35B, whatever you set here.
 #               openvino.genai PR #4050 fixes the underlying bug in 2026.3.
 #   cache_size  KV cache in GB. Caps context AND footprint: model + cache must
 #               leave room for the OS. On a 30GB box, 6 left 3GB free and
