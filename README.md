@@ -143,6 +143,7 @@ command line from it.
 [server]
 bin        = /usr/local/bin/llama-server
 models-dir = ~/models
+remote     =
 host       = 127.0.0.1
 port       = 9337
 models-max = 1
@@ -153,10 +154,41 @@ api-key    =
 |---|---|
 | `bin` | path to `llama-server`. Empty means search `$PATH` |
 | `models-dir` | directory to scan for `.gguf` files. Required |
-| `host` | `127.0.0.1` keeps the server on this machine |
+| `remote` | use **another machine's** server instead of running one here. See below |
+| `host` | `127.0.0.1` keeps the server on this machine. `0.0.0.0` serves your LAN |
 | `port` | listen port |
 | `models-max` | how many models may occupy VRAM at once. `1` swaps instead of stacking |
 | `api-key` | when set, `llama-server` enforces bearer auth |
+
+#### Serving other machines
+
+Set `host = 0.0.0.0` and the panel shows the address to point them at —
+`fedora.local:9337 (192.168.1.14)` — rather than the loopback address, which is
+the one address that tells you nothing once you are serving a network. The mDNS
+name is listed first because the IP moves on DHCP renewal and the hostname does
+not. `llama-server` has no auth unless you set `api-key`, so weigh that before
+binding a network you do not control.
+
+#### Using another machine's models
+
+On the second machine, the whole configuration is one line:
+
+```ini
+[server]
+remote = fedora.local:9337
+```
+
+No `bin`, no `models-dir`, no `models.ini`, no `.gguf` files. The model list
+comes from that server, including each model's real `--ctx-size` — opencode
+compacts against that number, so it is read rather than assumed.
+
+Sampling is deliberately not sent from the client: the machine holding the
+weights already applies its own `models.ini`, and a second machine pushing its
+own `temp`/`top-k` would fight it.
+
+Switching models needs nothing special — the server runs `models-max = 1` and
+swaps when a request names a different model. `stop` unloads the model to free
+VRAM rather than killing the process, since that server may have other clients.
 
 ### `models.ini` — how each model is loaded
 
