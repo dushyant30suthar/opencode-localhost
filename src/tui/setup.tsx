@@ -33,6 +33,21 @@ async function isFile(file: string): Promise<boolean> {
   return !!stat?.isFile()
 }
 
+/**
+ * Save, then say what the save did *not* do.
+ *
+ * The provider list is built once, in the server half's config() hook, because
+ * opencode loads plugins before it reads cfg.provider — that is the whole
+ * integration. Nothing in the plugin API re-runs it, so a setting that changes
+ * *which models exist* only takes effect on the next launch. Without saying so
+ * the write looks like it failed: the file is correct, the dialog closes, and
+ * the model picker is unchanged.
+ */
+async function saved(api: any, cfg: BackendConfig, key: "bin" | "models-dir" | "remote", value: string, note: string) {
+  await cfg.update(key, value)
+  api.ui.toast({ message: `saved — restart opencode to ${note}`, variant: "info" })
+}
+
 async function backendRow(spec: BackendSpec, cfg: BackendConfig | undefined, api: any, reopen: () => void): Promise<Row> {
   if (!supported(spec)) {
     return {
@@ -113,7 +128,7 @@ function chooseBinary(
       current={active}
       onSelect={(option: { value: string }) => {
         if (option.value === "__custom__") return promptBinaryOrRemote(api, spec, cfg, active ?? "", reopen)
-        void cfg.update("bin", option.value).then(reopen)
+        void saved(api, cfg, "bin", option.value, `use ${collapseHome(option.value)}`).then(reopen)
       }}
     />
   ))
@@ -135,7 +150,7 @@ function promptPath(
       onConfirm={(next: string) => {
         const resolved = expand(next)
         if (!resolved) return reopen()
-        void cfg.update(key, resolved).then(reopen)
+        void saved(api, cfg, key, resolved, "pick up the change").then(reopen)
       }}
       onCancel={reopen}
     />
@@ -156,10 +171,13 @@ function promptBinaryOrRemote(api: any, spec: BackendSpec, cfg: BackendConfig, v
       onConfirm={(next: string) => {
         const text = (next ?? "").trim()
         if (!text) return reopen()
-        if (cfg.looksRemote(text)) return void cfg.update("remote", normalizeRemote(text)).then(reopen)
+        if (cfg.looksRemote(text)) {
+          const addr = normalizeRemote(text)
+          return void saved(api, cfg, "remote", addr, `load models from ${addr}`).then(reopen)
+        }
         const resolved = expand(text)
         if (!resolved) return reopen()
-        void cfg.update("bin", resolved).then(reopen)
+        void saved(api, cfg, "bin", resolved, `use ${collapseHome(resolved)}`).then(reopen)
       }}
       onCancel={reopen}
     />
