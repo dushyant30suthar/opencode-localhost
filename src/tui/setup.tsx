@@ -98,8 +98,13 @@ async function backendRow(spec: BackendSpec, cfg: BackendConfig | undefined, api
 
 /**
  * Several llama.cpp builds commonly coexist — a tuned local build plus a
- * release binary — so this offers the ones it found and always allows typing
- * a path, rather than assuming the first hit on $PATH is the wanted one.
+ * release binary — so when there is a genuine choice this offers the ones it
+ * found, and always allows typing a path or an address instead.
+ *
+ * With nothing to choose between, it goes straight to the prompt. A select
+ * whose only row is "type something else" is a trap: its text box filters, so
+ * typing an address matches no row, the escape hatch disappears, and the dialog
+ * shows "No results found" with no way to commit what you typed.
  */
 function chooseBinary(
   api: any,
@@ -109,6 +114,9 @@ function chooseBinary(
   active: string | undefined,
   reopen: () => void,
 ) {
+  if (found.length < 2) return promptBinaryOrRemote(api, spec, cfg, active ?? found[0] ?? "", reopen)
+
+  let typed = ""
   const options = [
     ...found.map((file) => ({
       title: collapseHome(file),
@@ -118,7 +126,7 @@ function chooseBinary(
     {
       title: "Enter a path or an address…",
       value: "__custom__",
-      description: `a local build of ${spec.binary}, or another machine e.g. fedora.local:9337`,
+      description: `a local build of ${spec.binary}, or another machine e.g. fedora.local:${spec.id === "openvino" ? 8100 : 9337}`,
     },
   ]
   api.ui.dialog.replace(() => (
@@ -126,8 +134,18 @@ function chooseBinary(
       title={`${spec.name} binary`}
       options={options}
       current={active}
+      // Filtering would hide the "enter something else" row the moment someone
+      // types an address into the box — which reads as the dialog refusing the
+      // input. Keep every row reachable and carry what was typed into the
+      // prompt instead, so the keystrokes are not thrown away.
+      skipFilter
+      onFilter={(query: string) => {
+        typed = query
+      }}
       onSelect={(option: { value: string }) => {
-        if (option.value === "__custom__") return promptBinaryOrRemote(api, spec, cfg, active ?? "", reopen)
+        if (option.value === "__custom__") {
+          return promptBinaryOrRemote(api, spec, cfg, typed || active || "", reopen)
+        }
         void saved(api, cfg, "bin", option.value, `use ${collapseHome(option.value)}`).then(reopen)
       }}
     />
