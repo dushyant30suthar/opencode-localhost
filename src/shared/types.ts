@@ -44,7 +44,10 @@ export type ProviderStatus =
   | { state: "unconfigured"; missing: "binary" | "models-dir"; message: string; hint?: string }
   | { state: "stopped" }
   | { state: "starting" }
-  | { state: "running"; endpoint: string; loaded?: LoadedModel }
+  // `lan` is set only when the server binds 0.0.0.0. The endpoint stays loopback
+  // because that is how this machine reaches it; the panel needs the routable
+  // address separately, or you cannot tell what to point another machine at.
+  | { state: "running"; endpoint: string; lan?: string; loaded?: LoadedModel }
   | { state: "failed"; message: string; hint?: string }
 
 /** One engine. A machine can have several, each its own opencode provider. */

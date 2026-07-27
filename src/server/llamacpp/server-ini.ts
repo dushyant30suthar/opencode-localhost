@@ -27,10 +27,15 @@ const TEMPLATE = `# llama-server settings for opencode-localhost.
 #   port        llama-server listen port
 #   models-max  how many models may sit in VRAM at once. 1 swaps instead of stacking
 #   api-key     required by the server when set. leave empty for localhost-only
+#   remote      point at ANOTHER machine's llama-server instead of running one
+#               here, e.g. fedora.local:9337. When set, bin/models-dir/host/port
+#               are ignored and nothing is started or stopped locally — the
+#               model list comes from that server.
 
 [server]
 bin =
 models-dir =
+remote =
 host = 127.0.0.1
 port = 9337
 models-max = 1
@@ -40,6 +45,8 @@ api-key =
 export type ServerSettings = {
   bin: string
   modelsDir: string
+  /** host:port of someone else's llama-server. Empty = run one locally. */
+  remote: string
   host: string
   port: number
   modelsMax: number
@@ -49,6 +56,7 @@ export type ServerSettings = {
 const DEFAULTS: ServerSettings = {
   bin: "",
   modelsDir: "",
+  remote: "",
   host: "127.0.0.1",
   port: 9337,
   modelsMax: 1,
@@ -74,6 +82,7 @@ export async function load(): Promise<ServerSettings> {
   return {
     bin: expandHome((raw["bin"] ?? "").trim()),
     modelsDir: expandHome((raw["models-dir"] ?? "").trim()),
+    remote: (raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
     host: (raw["host"] || DEFAULTS.host).trim(),
     port: number(raw["port"], DEFAULTS.port),
     modelsMax: number(raw["models-max"], DEFAULTS.modelsMax),

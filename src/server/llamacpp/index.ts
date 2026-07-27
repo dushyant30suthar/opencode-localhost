@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import os from "os"
 import { spawn } from "child_process"
 import { stateDir, collapseHome } from "../../shared/paths.ts"
 import type { LoadEvent, LoadedModel, ProviderStatus } from "../../shared/types.ts"
@@ -58,9 +59,43 @@ export function create(): Backend {
   // copy meant editing it did nothing until the process restarted — including
   // for the panel, which polls this several times a minute.
   const config = async () => (settings = await Server.load())
-  const baseURL = () => {
+  const baseURL = () => `${origin()}/v1`
+
+  /** Pointing at another machine: we are a client, not a supervisor. */
+  const isRemote = () => !!settings?.remote
+
+  /**
+   * Scheme+host+port, no path. Everything that is not /v1 (the SSE stream, the
+   * router's load/unload) must build from this — hand-rolling host:port from the
+   * settings silently ignored `remote` and pointed the laptop at its own loopback.
+   */
+  const origin = () => {
+    if (settings?.remote) return `http://${settings.remote}`
     const host = settings?.host === "0.0.0.0" ? "127.0.0.1" : (settings?.host ?? "127.0.0.1")
-    return `http://${host}:${settings?.port ?? 9337}/v1`
+    return `http://${host}:${settings?.port ?? 9337}`
+  }
+
+  /**
+   * Where *other* machines reach this server, or undefined when it is loopback-only.
+   *
+   * baseURL() is deliberately loopback even on 0.0.0.0 — that is how this machine
+   * connects. But then nothing on screen tells you the address to put in a second
+   * machine's config, which is the one thing you need once you bind the LAN.
+   *
+   * Prefers the mDNS name: the IPv4 moves on DHCP renewal and the hostname does not,
+   * so `fedora.local` is the address worth copying down. The IP is shown alongside
+   * because mDNS is not reliable on every client.
+   */
+  const lanAddress = () => {
+    if (settings?.remote) return undefined
+    if (settings?.host !== "0.0.0.0") return undefined
+    const port = settings?.port ?? 9337
+    const ipv4 = Object.values(os.networkInterfaces())
+      .flat()
+      .find((nic) => nic && nic.family === "IPv4" && !nic.internal)?.address
+    const name = os.hostname()
+    if (name && ipv4) return `${name}.local:${port} (${ipv4})`
+    return ipv4 ? `${ipv4}:${port}` : undefined
   }
 
   async function resolveBin(cfg: Server.ServerSettings): Promise<string | undefined> {
@@ -73,6 +108,18 @@ export function create(): Backend {
 
   async function status(): Promise<ProviderStatus> {
     const cfg = await config()
+    // A remote server needs no binary and no models directory here. The only
+    // question worth asking is whether it answers.
+    if (cfg.remote) {
+      if (await reachable(baseURL(), cfg.apiKey, PROBE_TIMEOUT)) {
+        return { state: "running", endpoint: baseURL() }
+      }
+      return {
+        state: "failed",
+        message: `no answer from ${cfg.remote}`,
+        hint: `check it is running and bound to 0.0.0.0`,
+      }
+    }
     const bin = await resolveBin(cfg)
     if (!bin) {
       return {
@@ -91,13 +138,46 @@ export function create(): Backend {
       }
     }
     if (await reachable(baseURL(), cfg.apiKey, PROBE_TIMEOUT)) {
-      return { state: "running", endpoint: baseURL() }
+      return { state: "running", endpoint: baseURL(), lan: lanAddress() }
     }
     return { state: "stopped" }
   }
 
+  /**
+   * Models on someone else's server. Its /v1/models carries each entry's launch
+   * argv, so the real --ctx-size comes back with the listing — opencode compacts
+   * against that number, and guessing it would silently truncate long sessions.
+   *
+   * Sampling stays empty on purpose: the remote server already applies its own
+   * models.ini, and overriding it from this machine would fight it.
+   */
+  async function remoteModels(cfg: Server.ServerSettings): Promise<DiscoveredModel[]> {
+    const res = await fetch(`${baseURL()}/models`, {
+      signal: AbortSignal.timeout(PROBE_TIMEOUT * 4),
+      headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
+    }).catch(() => undefined)
+    if (!res?.ok) return []
+    const body: any = await res.json().catch(() => undefined)
+    const entries: any[] = Array.isArray(body?.data) ? body.data : []
+    return entries.flatMap((entry) => {
+      const id = typeof entry?.id === "string" ? entry.id : undefined
+      if (!id) return []
+      const args = argsOf(entry?.status?.args)
+      const parsed = Number.parseInt(args["ctx-size"] ?? "", 10)
+      const context = Number.isFinite(parsed) && parsed > 0 ? parsed : 32_768
+      return [{
+        id,
+        name: id.split("/").filter(Boolean).at(-1) ?? id,
+        context,
+        output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
+        sampling: {},
+      }]
+    })
+  }
+
   async function models(): Promise<DiscoveredModel[]> {
     const cfg = await config()
+    if (cfg.remote) return remoteModels(cfg)
     if (!cfg.modelsDir) return []
     const local = await scan(cfg.modelsDir)
     if (local.length === 0) return []
@@ -150,7 +230,7 @@ export function create(): Backend {
     const deadline = Date.now() + START_TIMEOUT
     while (Date.now() < deadline) {
       if (await reachable(baseURL(), cfg.apiKey, PROBE_TIMEOUT)) {
-        return { state: "running", endpoint: baseURL() }
+        return { state: "running", endpoint: baseURL(), lan: lanAddress() }
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL))
     }
@@ -162,10 +242,12 @@ export function create(): Backend {
     if (starting) return starting
     starting = (async () => {
       const cfg = await config()
+      // Not ours to start. Report what the remote says and leave it alone.
+      if (cfg.remote) return status()
       const bin = await resolveBin(cfg)
       if (!bin || !cfg.modelsDir) return status()
       if (await reachable(baseURL(), cfg.apiKey, PROBE_TIMEOUT)) {
-        return { state: "running", endpoint: baseURL() } as ProviderStatus
+        return { state: "running", endpoint: baseURL(), lan: lanAddress() } as ProviderStatus
       }
       return launch(cfg, bin)
     })()
@@ -182,6 +264,25 @@ export function create(): Backend {
    * llama-server — the pidfile outlives crashes and reboots.
    */
   async function stop(): Promise<boolean> {
+    // On a remote we unload the model rather than kill the process. Freeing VRAM
+    // is the useful half of "stop"; killing a server other people may be using is
+    // not ours to do. Model *switching* needs neither — the router runs with
+    // models-max=1 and swaps on its own when a request names another model.
+    if (isRemote()) {
+      const cfg = await config()
+      const current = await loaded()
+      if (!current) return false
+      const res = await fetch(`${origin()}/models/unload`, {
+        method: "POST",
+        signal: AbortSignal.timeout(PROBE_TIMEOUT * 4),
+        headers: {
+          "Content-Type": "application/json",
+          ...(cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {}),
+        },
+        body: JSON.stringify({ model: current.id }),
+      }).catch(() => undefined)
+      return !!res?.ok
+    }
     const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
     const pid = Number.parseInt(raw.trim(), 10)
     if (!Number.isFinite(pid) || pid <= 0) return false
@@ -276,8 +377,7 @@ export function create(): Backend {
       while (!stopped) {
         try {
           const cfg = await config()
-          const host = cfg.host === "0.0.0.0" ? "127.0.0.1" : cfg.host
-          const res = await fetch(`http://${host}:${cfg.port}/models/sse`, {
+          const res = await fetch(`${origin()}/models/sse`, {
             signal: controller.signal,
             headers: cfg.apiKey ? { Authorization: `Bearer ${cfg.apiKey}` } : {},
           })

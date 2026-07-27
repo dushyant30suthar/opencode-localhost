@@ -107,8 +107,14 @@ export function Hardware(props: { theme: Theme; data: PanelData }) {
   )
 }
 
+/**
+ * The address worth showing. When the server is bound to the LAN, loopback is the
+ * one address that tells you nothing — every other machine needs the routable one,
+ * so show that instead rather than both.
+ */
 function endpointOf(status: ProviderStatus) {
   if (status.state !== "running") return undefined
+  if (status.lan) return status.lan
   return status.endpoint.replace(/^https?:\/\//, "").replace(/\/v1$/, "")
 }
 
