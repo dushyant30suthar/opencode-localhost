@@ -60,10 +60,11 @@ async function executable(file: string): Promise<boolean> {
  * endpoint returns 503 for exactly that window and 200 once the graph is
  * actually servable.
  */
-async function ready(host: string, port: number, timeout: number): Promise<boolean> {
+async function ready(origin: string, timeout: number, apiKey?: string): Promise<boolean> {
   try {
-    const res = await fetch(`http://${host}:${port}/v2/health/ready`, {
+    const res = await fetch(`${origin}/v2/health/ready`, {
       signal: AbortSignal.timeout(timeout),
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
     })
     return res.ok
   } catch {
@@ -77,10 +78,16 @@ async function ready(host: string, port: number, timeout: number): Promise<boole
  * Note this is not a readiness check: `/v3/models` answers 200 with an empty
  * list all through the graph-compile window, which is why `ready()` above
  * exists separately.
+ *
+ * Takes an origin rather than host+port so it cannot silently ignore `remote`
+ * the way rebuilding `host:port` from settings would.
  */
-async function servedModelFrom(host: string, port: number, timeout: number): Promise<string | undefined> {
+async function servedModelFrom(origin: string, timeout: number, apiKey?: string): Promise<string | undefined> {
   try {
-    const res = await fetch(`http://${host}:${port}/v3/models`, { signal: AbortSignal.timeout(timeout) })
+    const res = await fetch(`${origin}/v3/models`, {
+      signal: AbortSignal.timeout(timeout),
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    })
     if (!res.ok) return undefined
     const body: any = await res.json()
     const first = Array.isArray(body?.data) ? body.data[0] : undefined
@@ -153,9 +160,23 @@ export function create(): Backend {
   const config = async () => (settings = await Server.load())
   const host = () => (settings?.host === "0.0.0.0" ? "127.0.0.1" : (settings?.host ?? "127.0.0.1"))
   const port = () => settings?.port ?? 8100
+
+  /** Pointing at another machine: we are a client, not a supervisor. */
+  const isRemote = () => !!settings?.remote
+
+  /**
+   * Scheme+host+port, no path. Everything that talks to the server must build
+   * from this — rebuilding `host:port` from settings by hand silently ignores
+   * `remote` and points this machine at its own loopback.
+   */
+  const origin = () => {
+    if (settings?.remote) return `http://${settings.remote}`
+    return `http://${host()}:${port()}`
+  }
+
   // OVMS mounts its OpenAI-compatible endpoints under /v3; /v1 carries only
   // /v1/config and 404s for models and chat.
-  const baseURL = () => `http://${host()}:${port()}/v3`
+  const baseURL = () => `${origin()}/v3`
 
   /**
    * Where *other* machines reach this server, or undefined when it is
@@ -168,6 +189,7 @@ export function create(): Backend {
    * along because mDNS is not reliable on every client.
    */
   const lanAddress = () => {
+    if (settings?.remote) return undefined
     if (settings?.host !== "0.0.0.0") return undefined
     const ipv4 = Object.values(os.networkInterfaces())
       .flat()
@@ -187,6 +209,18 @@ export function create(): Backend {
 
   async function status(): Promise<ProviderStatus> {
     const cfg = await config()
+    // A remote server needs no binary and no models directory here. The only
+    // question worth asking is whether it answers.
+    if (cfg.remote) {
+      if (await ready(origin(), PROBE_TIMEOUT, cfg.apiKey)) {
+        return { state: "running", endpoint: baseURL() }
+      }
+      return {
+        state: "failed",
+        message: `no answer from ${cfg.remote}`,
+        hint: "check it is running and bound to 0.0.0.0",
+      }
+    }
     const bin = await resolveBin(cfg)
     if (!bin) {
       return {
@@ -204,14 +238,40 @@ export function create(): Backend {
         hint: `set it in ${collapseHome(Server.FILE)}`,
       }
     }
-    if (await ready(host(), port(), PROBE_TIMEOUT)) {
+    if (await ready(origin(), PROBE_TIMEOUT, cfg.apiKey)) {
       return { state: "running", endpoint: baseURL(), lan: lanAddress() }
     }
     return { state: "stopped" }
   }
 
+  /**
+   * The one model someone else's OVMS is serving.
+   *
+   * Unlike llama.cpp's router, OVMS's /v3/models carries no launch arguments —
+   * just the id — so the real context is not discoverable over the wire. We
+   * advertise this machine's `context` setting and it has to match what the
+   * far end can actually serve: too high and opencode compacts against a window
+   * that returns empty completions, which reads as the model refusing to answer.
+   */
+  async function remoteModels(cfg: Server.ServerSettings): Promise<DiscoveredModel[]> {
+    const id = await servedModelFrom(origin(), PROBE_TIMEOUT * 4, cfg.apiKey)
+    if (!id) return []
+    const context = cfg.context
+    return [
+      {
+        id,
+        name: id.replace(/-ov$/i, ""),
+        context,
+        output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
+        // The far end applies its own sampling; overriding from here fights it.
+        sampling: {},
+      },
+    ]
+  }
+
   async function models(): Promise<DiscoveredModel[]> {
     const cfg = await config()
+    if (cfg.remote) return remoteModels(cfg)
     if (!cfg.modelsDir) return []
     const local = await scan(cfg.modelsDir)
     // What a running server actually answers for wins over what the file asks
@@ -219,7 +279,7 @@ export function create(): Backend {
     // advertising the configured id while a different one is loaded produces a
     // provider whose every request fails — and a panel whose name never
     // matches what is running. Config decides what the *next* start loads.
-    const served = await servedModelFrom(host(), port(), PROBE_TIMEOUT)
+    const served = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
     const model = (served && local.find((entry) => entry.id === served)) || chosen(cfg, local)
     if (!model) return []
     const context = cfg.context
@@ -275,7 +335,7 @@ export function create(): Backend {
 
     const deadline = Date.now() + START_TIMEOUT
     while (Date.now() < deadline) {
-      if (await ready(host(), port(), PROBE_TIMEOUT)) {
+      if (await ready(origin(), PROBE_TIMEOUT, settings?.apiKey)) {
         return { state: "running", endpoint: baseURL(), lan: lanAddress() }
       }
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL))
@@ -294,6 +354,12 @@ export function create(): Backend {
    */
   async function stop(): Promise<boolean> {
     await config()
+    // Nothing to stop on a remote, and no way to. llama.cpp's router exposes
+    // /models/unload, which frees VRAM without killing a server other people
+    // may be using; OVMS has no such endpoint — one model, loaded for the life
+    // of the process. Killing it is not ours to do from here, so we report the
+    // honest answer rather than pretending the button worked.
+    if (isRemote()) return false
     const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
     const recorded = Number.parseInt(raw.trim(), 10)
     let pid: number | undefined
@@ -329,8 +395,12 @@ export function create(): Backend {
       "cache-size": `${cfg.cacheSize}G`,
       context: String(cfg.context),
     }
-    const id = await servedModelFrom(host(), port(), PROBE_TIMEOUT)
-    if (id) return { id, args }
+    const id = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
+    if (id) return { id, args: cfg.remote ? { host: cfg.remote } : args }
+
+    // A remote that is not answering is simply not available; there is no local
+    // pid to consult and no compile window of ours to narrate.
+    if (cfg.remote) return undefined
 
     // not answering yet — is it still coming up, or simply not running?
     const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
@@ -373,6 +443,13 @@ export function create(): Backend {
     void (async () => {
       const cfg = await config().catch(() => undefined)
       if (!cfg || model) return
+      // A remote's log is on the other machine. There is no load of ours to
+      // narrate, so report what it already serves and stop there.
+      if (cfg.remote) {
+        const id = await servedModelFrom(origin(), PROBE_TIMEOUT * 4, cfg.apiKey)
+        if (id && !stopped) onEvent({ model: id, loading: false, loaded: true } as LoadEvent)
+        return
+      }
       const local = await scan(cfg.modelsDir).catch(() => [])
       model = chosen(cfg, local)?.id ?? ""
     })()
@@ -447,9 +524,11 @@ export function create(): Backend {
     if (starting) return starting
     starting = (async () => {
       const cfg = await config()
+      // Not ours to start. Report what the remote says and leave it alone.
+      if (cfg.remote) return status()
       const bin = await resolveBin(cfg)
       if (!bin || !cfg.modelsDir) return status()
-      if (await ready(host(), port(), PROBE_TIMEOUT)) {
+      if (await ready(origin(), PROBE_TIMEOUT, settings?.apiKey)) {
         return { state: "running", endpoint: baseURL(), lan: lanAddress() } as ProviderStatus
       }
       return launch(cfg, bin)

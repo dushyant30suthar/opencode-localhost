@@ -44,6 +44,12 @@ const TEMPLATE = `# OpenVINO Model Server settings for opencode-localhost.
 #   model       which one to serve. empty = the only one, if there is only one
 #               OVMS holds one model per process, so this is a real choice:
 #               changing it and restarting is how you switch models
+#   remote      point at ANOTHER machine's OVMS instead of running one here,
+#               e.g. fedora.local:8100. When set, bin/models-dir/model/host/port
+#               are ignored and nothing is started locally. Note stopping is not
+#               possible on a remote: OVMS holds one model for the life of the
+#               process and has no unload endpoint, so the only way to free that
+#               GPU is on the machine that owns it
 #   host        127.0.0.1 keeps it on this machine; 0.0.0.0 serves the LAN so
 #               another machine can point at it. This is passed to OVMS as
 #               --rest_bind_address, whose own default is 0.0.0.0 — so leaving
@@ -70,6 +76,7 @@ const TEMPLATE = `# OpenVINO Model Server settings for opencode-localhost.
 bin =
 models-dir =
 model =
+remote =
 host = 127.0.0.1
 port = 8100
 cache-size = 4
@@ -87,6 +94,7 @@ export type ServerSettings = {
   bin: string
   modelsDir: string
   model: string
+  remote: string
   host: string
   port: number
   cacheSize: number
@@ -100,6 +108,7 @@ const DEFAULTS: ServerSettings = {
   bin: "",
   modelsDir: "",
   model: "",
+  remote: "",
   host: "127.0.0.1",
   port: 8100,
   cacheSize: 4,
@@ -138,6 +147,8 @@ export async function load(): Promise<ServerSettings> {
     bin: expandHome((raw["bin"] ?? "").trim()),
     modelsDir: expandHome((raw["models-dir"] ?? "").trim()),
     model: (raw["model"] ?? "").trim(),
+    // normalised to bare host:port so origin() can prefix the scheme exactly once
+    remote: (raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
     host: (raw["host"] || DEFAULTS.host).trim(),
     port: number(raw["port"], DEFAULTS.port),
     cacheSize: number(raw["cache-size"], DEFAULTS.cacheSize),
