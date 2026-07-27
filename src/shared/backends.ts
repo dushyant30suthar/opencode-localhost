@@ -55,9 +55,16 @@ export const BACKENDS: BackendSpec[] = [
   {
     id: "openvino",
     name: "OpenVINO",
-    binary: "ovms",
-    install: "pip install openvino-genai",
-    implemented: false,
+    // the generated wrapper, not bare `ovms`: that binary links libpython and
+    // exits before main() unless LD_LIBRARY_PATH is already pointing at it
+    binary: "ovms-serve",
+    // Not a pip package — `pip install openvino-genai` gets you the Python
+    // library, which has no server in it. OVMS ships as a prebuilt archive,
+    // and the python_on build is the one to take: the C++-only python_off
+    // build renders chat templates with a cut-down engine that drops the
+    // system message and cannot emit tool calls, which an agent client needs.
+    install: "download the python_on build from github.com/openvinotoolkit/model_server/releases",
+    implemented: true,
   },
 ]
 

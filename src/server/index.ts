@@ -1,5 +1,6 @@
 import type { Backend, DiscoveredModel } from "./backend.ts"
 import { create as llamacpp } from "./llamacpp/index.ts"
+import { create as openvino } from "./openvino/index.ts"
 
 /**
  * The server half.
@@ -15,7 +16,7 @@ import { create as llamacpp } from "./llamacpp/index.ts"
  * know nothing about local models, never override it.
  */
 
-const BACKENDS: Backend[] = [llamacpp()]
+const BACKENDS: Backend[] = [llamacpp(), openvino()]
 
 /** Cached per process: discovery walks the filesystem and starts a server. */
 const sampling = new Map<string, Record<string, number>>()
