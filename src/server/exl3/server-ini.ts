@@ -51,6 +51,9 @@ const TEMPLATE = `# exllamav3 (TabbyAPI) settings for opencode-localhost.
 #              editing/switching the YAML and restarting
 #   models-dir where EXL3 model directories live, for the panel's listing only;
 #              TabbyAPI resolves models from its own YAML
+#   model      the id to advertise while a REMOTE server is not answering, so
+#              the provider stays in the picker on this machine. Must match the
+#              far YAML's model_name. Ignored when running locally
 #   remote     point at ANOTHER machine's TabbyAPI instead of running one here,
 #              e.g. fedora.local:5000. When set, nothing is started locally
 #   host       must match the YAML's network.host; used to reach the server,
@@ -68,6 +71,7 @@ const TEMPLATE = `# exllamav3 (TabbyAPI) settings for opencode-localhost.
 bin =
 tabby-dir =
 config =
+model =
 models-dir =
 remote =
 host = 127.0.0.1
@@ -86,6 +90,7 @@ export type ServerSettings = {
   bin: string
   tabbyDir: string
   config: string
+  model: string
   modelsDir: string
   remote: string
   host: string
@@ -99,6 +104,7 @@ const DEFAULTS: ServerSettings = {
   bin: "",
   tabbyDir: "",
   config: "",
+  model: "",
   modelsDir: "",
   remote: "",
   host: "127.0.0.1",
@@ -137,6 +143,7 @@ export async function load(): Promise<ServerSettings> {
     bin: expandHome((raw["bin"] ?? "").trim()),
     tabbyDir: expandHome((raw["tabby-dir"] ?? "").trim()),
     config: expandHome((raw["config"] ?? "").trim()),
+    model: (raw["model"] ?? "").trim(),
     modelsDir: expandHome((raw["models-dir"] ?? "").trim()),
     // normalised to bare host:port so origin() can prefix the scheme exactly once
     remote: (raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),

@@ -180,11 +180,14 @@ export function create(): Backend {
       if (await ready(origin(), PROBE_TIMEOUT, cfg.apiKey)) {
         return { state: "running", endpoint: baseURL() }
       }
-      return {
-        state: "failed",
-        message: `no answer from ${cfg.remote}`,
-        hint: "check it is running and bound to 0.0.0.0",
-      }
+      // "stopped", not "failed" — a deliberate divergence from OpenVINO's
+      // remote. TabbyAPI is not an always-on router: the far machine starts it
+      // when a session wants EXL3, so "not answering right now" is its normal
+      // resting state. Reporting failed would make register() skip the provider
+      // and the model would vanish from the picker on this machine — the far
+      // server being down is exactly when you want to see what starting it
+      // would offer.
+      return { state: "stopped" }
     }
     const missing = await unconfigured(cfg)
     if (missing) return missing
@@ -215,7 +218,11 @@ export function create(): Backend {
       if (missing) return []
     }
     const served = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
-    const id = served ?? (cfg.remote ? undefined : await configuredModelName(cfg))
+    // A remote that is not answering still advertises `model` from the ini —
+    // the far end has no always-on router to ask, and a provider that vanishes
+    // whenever the far server rests reads as "exl3 not acknowledged" on the
+    // machine pointing at it.
+    const id = served ?? (cfg.remote ? cfg.model : await configuredModelName(cfg))
     if (!id) return []
     const context = cfg.context
     return [

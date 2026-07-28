@@ -263,6 +263,62 @@ export function create(): Backend {
    * pid is never killed, and only kills a process that is actually
    * llama-server — the pidfile outlives crashes and reboots.
    */
+  /**
+   * Every llama-server on this machine that belongs to this router: the router
+   * itself (matched by --port, since several checkouts' routers could coexist)
+   * and the model servers it spawned (matched by parentage, with a cmdline
+   * fallback for children re-parented to init after a router crash — those are
+   * exactly the ones that keep 20-30GB of VRAM after "stop" appears to work).
+   */
+  async function routerFamily(port: number): Promise<{ router?: number; children: number[] }> {
+    const family: { router?: number; children: number[] } = { children: [] }
+    const orphans: number[] = []
+    const entries = await fs.readdir("/proc").catch(() => [] as string[])
+    for (const entry of entries) {
+      const pid = Number.parseInt(entry, 10)
+      if (!Number.isFinite(pid) || pid <= 0) continue
+      const exe = await fs.readlink(`/proc/${pid}/exe`).catch(() => "")
+      if (!exe.includes("llama-server")) continue
+      const raw = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")
+      const args = raw.split("\0")
+      const isRouter = args.includes("--models-preset") || args.includes("--models-dir")
+      if (isRouter) {
+        const at = args.indexOf("--port")
+        if (at >= 0 && args[at + 1] === String(port)) family.router = pid
+        continue
+      }
+      // a spawned model server carries an explicit --model path
+      if (args.includes("--model")) orphans.push(pid)
+    }
+    // Every spawned model server counts, whatever its parent says: after a
+    // router crash or restart the children re-parent to init, and those are
+    // exactly the ones that keep the VRAM.
+    family.children = orphans
+    return family
+  }
+
+  async function terminate(pid: number): Promise<boolean> {
+    try {
+      process.kill(pid, "SIGTERM")
+    } catch {
+      return false
+    }
+    for (let i = 0; i < 40; i++) {
+      try {
+        process.kill(pid, 0)
+      } catch {
+        return true
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250))
+    }
+    try {
+      process.kill(pid, "SIGKILL")
+    } catch {
+      // already gone
+    }
+    return true
+  }
+
   async function stop(): Promise<boolean> {
     // On a remote we unload the model rather than kill the process. Freeing VRAM
     // is the useful half of "stop"; killing a server other people may be using is
@@ -283,34 +339,34 @@ export function create(): Backend {
       }).catch(() => undefined)
       return !!res?.ok
     }
+
+    // The pid file only covers routers we launched. A router started by hand in
+    // a terminal — the normal way during tuning — answers the health probe just
+    // the same, so without the /proc fallback the panel shows a server the stop
+    // button silently cannot touch. And killing only the router is not stopping:
+    // the model server it spawned holds the VRAM and must go first, or the next
+    // request races a half-dead family.
+    const cfg = await config()
+    const family = await routerFamily(cfg.port)
+
     const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
-    const pid = Number.parseInt(raw.trim(), 10)
-    if (!Number.isFinite(pid) || pid <= 0) return false
-    const exe = await fs.readlink(`/proc/${pid}/exe`).catch(() => "")
-    if (!exe.includes("llama-server")) {
+    const recorded = Number.parseInt(raw.trim(), 10)
+    if (Number.isFinite(recorded) && recorded > 0 && family.router === undefined) {
+      const exe = await fs.readlink(`/proc/${recorded}/exe`).catch(() => "")
+      if (exe.includes("llama-server")) family.router = recorded
+    }
+
+    if (family.router === undefined && family.children.length === 0) {
       await fs.rm(PID_FILE, { force: true }).catch(() => {})
       return false
     }
-    try {
-      process.kill(pid, "SIGTERM")
-    } catch {
-      return false
-    }
-    for (let i = 0; i < 40; i++) {
-      try {
-        process.kill(pid, 0)
-      } catch {
-        break
-      }
-      await new Promise((resolve) => setTimeout(resolve, 250))
-    }
-    try {
-      process.kill(pid, "SIGKILL")
-    } catch {
-      // already gone
-    }
+
+    // router first so nothing respawns a child mid-stop
+    let stopped = false
+    if (family.router !== undefined) stopped = (await terminate(family.router)) || stopped
+    for (const child of family.children) stopped = (await terminate(child)) || stopped
     await fs.rm(PID_FILE, { force: true }).catch(() => {})
-    return true
+    return stopped
   }
 
   /** llama-server reports its launch flags as a flat argv array. */
