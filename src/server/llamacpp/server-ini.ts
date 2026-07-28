@@ -68,6 +68,12 @@ function number(value: string | undefined, fallback: number) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
+
+function withDefaultPort(remote: string, port: number): string {
+  if (!remote || /:\d+$/.test(remote)) return remote
+  return `${remote}:${port}`
+}
+
 /** Creates the file on first call so there is always something to point at. */
 export async function load(): Promise<ServerSettings> {
   let text = await fs.readFile(FILE, "utf8").catch(() => undefined)
@@ -82,7 +88,9 @@ export async function load(): Promise<ServerSettings> {
   return {
     bin: expandHome((raw["bin"] ?? "").trim()),
     modelsDir: expandHome((raw["models-dir"] ?? "").trim()),
-    remote: (raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
+    // normalised to bare host:port; a bare host gets this backend's default
+    // port, or "192.168.1.23" probes port 80 and reads as a dead server
+    remote: withDefaultPort((raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""), 9337),
     host: (raw["host"] || DEFAULTS.host).trim(),
     port: number(raw["port"], DEFAULTS.port),
     modelsMax: number(raw["models-max"], DEFAULTS.modelsMax),
