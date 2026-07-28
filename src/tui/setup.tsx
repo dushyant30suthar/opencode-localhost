@@ -166,7 +166,18 @@ function promptPath(
       value={collapseHome(value)}
       placeholder="~/..."
       onConfirm={(next: string) => {
-        const resolved = expand(next)
+        const text = (next ?? "").trim()
+        if (!text) return reopen()
+        // The binary row already takes a path or an address; this row taking
+        // only a path meant an IP typed here was saved as a models directory —
+        // "192.168.1.23 — not found" — while `remote` stayed empty and the
+        // backend read as never acknowledged. One question, one rule,
+        // whichever row it is asked from.
+        if (cfg.looksRemote(text)) {
+          const addr = normalizeRemote(text)
+          return void saved(api, cfg, "remote", addr, `load models from ${addr}`).then(reopen)
+        }
+        const resolved = expand(text)
         if (!resolved) return reopen()
         void saved(api, cfg, key, resolved, "pick up the change").then(reopen)
       }}
