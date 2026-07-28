@@ -66,6 +66,17 @@ export const BACKENDS: BackendSpec[] = [
     install: "download the python_on build from github.com/openvinotoolkit/model_server/releases",
     implemented: true,
   },
+  {
+    id: "exl3",
+    name: "exllamav3",
+    // Not a binary on $PATH: TabbyAPI is a checkout run by a venv's python,
+    // and both are settings in its server.ini. python3 here only tells the
+    // setup screen an interpreter exists at all — the row's real requirements
+    // are the three REQUIRED keys in that file.
+    binary: "python3",
+    install: "clone github.com/theroyallab/tabbyAPI, install the exllamav3 wheel in a venv, point bin at that venv's python",
+    implemented: true,
+  },
 ]
 
 export function supported(spec: BackendSpec): boolean {
