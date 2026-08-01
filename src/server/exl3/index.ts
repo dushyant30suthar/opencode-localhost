@@ -301,7 +301,15 @@ export function create(): Backend {
       const file = await ModelsDir.fileFor(id)
       if (file) return file
     }
-    return (await ModelsDir.scan())[0]?.file
+    // No id: the panel's [start] button, which cannot know what to pick.
+    // TabbyAPI must load exactly one model at launch (llama.cpp's router does
+    // not, which is why its [start] correctly loads nothing), so resume the
+    // last one served. Falling back to the alphabetically first file meant
+    // [start] always brought up 5.00bpw regardless of what was running before.
+    const declared = await ModelsDir.scan()
+    const remembered = (await fs.readFile(YAML_FILE, "utf8").catch(() => "")).trim()
+    if (remembered && declared.some((model) => model.file === remembered)) return remembered
+    return declared[0]?.file
   }
 
   async function status(): Promise<ProviderStatus> {
@@ -444,7 +452,10 @@ export function create(): Backend {
     await fs.rm(PID_FILE, { force: true }).catch(() => {})
     launchedWith = undefined
     lastSeen = undefined
-    await fs.rm(YAML_FILE, { force: true }).catch(() => {})
+    // YAML_FILE is deliberately NOT removed. It records the last model served,
+    // not the one currently loaded — ensure() only trusts it while the process
+    // is alive, and [start] uses it to bring back what you had rather than
+    // whatever sorts first.
     return killed
   }
 
