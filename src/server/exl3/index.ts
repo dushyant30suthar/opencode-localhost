@@ -29,6 +29,16 @@ import * as ModelsDir from "./models-dir.ts"
 
 const STATE = stateDir(Server.BACKEND)
 const PID_FILE = path.join(STATE, "server.pid")
+/**
+ * Which YAML the running server was launched with.
+ *
+ * On disk rather than in memory because the panel process restarts far more
+ * often than the server does, and TabbyAPI cannot answer the question: it
+ * reports the checkpoint's model_name, and several YAMLs can serve the same
+ * checkpoint with different slots and drafters. Without this, every opencode
+ * restart tore down a healthy server on the first message just to be sure.
+ */
+const YAML_FILE = path.join(STATE, "server.yaml-path")
 const LOG_FILE = path.join(STATE, "server.log")
 
 const PROBE_TIMEOUT = 1_500
@@ -388,6 +398,8 @@ export function create(): Backend {
     const log = await fs.open(LOG_FILE, "a").catch(() => undefined)
     launchedWith = yaml
     lastSeen = undefined
+    await fs.mkdir(STATE, { recursive: true }).catch(() => {})
+    await fs.writeFile(YAML_FILE, `${yaml}\n`).catch(() => {})
     try {
       const child = spawn(cfg.bin, Server.argv({ ...cfg, config: yaml }), {
         cwd: cfg.tabbyDir,
@@ -432,6 +444,7 @@ export function create(): Backend {
     await fs.rm(PID_FILE, { force: true }).catch(() => {})
     launchedWith = undefined
     lastSeen = undefined
+    await fs.rm(YAML_FILE, { force: true }).catch(() => {})
     return killed
   }
 
@@ -532,6 +545,24 @@ export function create(): Backend {
       }
       if (line.includes("Loading draft model") || line.includes("draft model")) {
         return emit({ loading: true, stage: "loading draft (MTP)" })
+      }
+      // TabbyAPI draws rich progress bars while weights stream in:
+      //   "Loading model modules ━━━━━━  46% 31/67 0:00:12"
+      // The header comment used to say there was no byte fraction to report, so
+      // `progress` was left undefined and the panel showed "allocating…" for the
+      // whole 40s load. There IS a fraction — it is module counts, not bytes,
+      // but that is exactly what a progress bar wants.
+      const counted = line.match(/Loading (model|draft) modules[^\d]*\d+%\s+(\d+)\/(\d+)/)
+      if (counted) {
+        const done = Number(counted[2])
+        const total = Number(counted[3])
+        if (total > 0) {
+          return emit({
+            loading: true,
+            progress: Math.min(1, done / total),
+            stage: counted[1] === "draft" ? "loading draft (MTP)" : "loading weights",
+          })
+        }
       }
       if (line.includes("Application startup complete")) {
         return emit({ loading: false, loaded: true })
@@ -635,6 +666,10 @@ export function create(): Backend {
     // working server for a model this machine cannot serve.
     if (!wanted) return status()
 
+    if (!launchedWith) {
+      const recorded = (await fs.readFile(YAML_FILE, "utf8").catch(() => "")).trim()
+      if (recorded && (await serverAlive(cfg))) launchedWith = recorded
+    }
     const up = await ready(origin(), PROBE_TIMEOUT, cfg.apiKey)
     if (up && launchedWith === wanted.file) {
       return { state: "running", endpoint: baseURL(), lan: lanAddress() }

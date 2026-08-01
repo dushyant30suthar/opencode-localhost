@@ -207,11 +207,20 @@ function detailOf(backend: BackendPanel, throughput?: number) {
   }
   const args = model.args
   const first: string[] = []
-  if (args["ctx-size"]) first.push(`${args["ctx-size"]} ctx`)
-  if (args["cache-type-k"]) first.push(`${args["cache-type-k"]} KV`)
   const second: string[] = []
+  // Two vocabularies. llamacpp reports llama-server's launch argv verbatim, so
+  // the keys are its CLI flags; exl3 reports TabbyAPI's /v1/model parameters,
+  // which have no argv to mirror. Reading only the first set meant every exl3
+  // field was collected by the backend and then silently dropped here.
+  if (args["ctx-size"]) first.push(`${args["ctx-size"]} ctx`)
+  else if (args["context"]) first.push(`${args["context"]} ctx`)
+  if (args["cache-type-k"]) first.push(`${args["cache-type-k"]} KV`)
+  else if (args["cache"]) first.push(`KV ${args["cache"]}`)
+
   if (args["gpu-layers"]) second.push(`ngl ${args["gpu-layers"]}`)
   if (args["tensor-split"]) second.push(`split ${args["tensor-split"]}`)
+  if (args["slots"]) second.push(`${args["slots"]} slots`)
+  if (args["draft"]) second.push(args["draft"])
   if (throughput) second.push(`${throughput.toFixed(1)} tok/s`)
   return [first.join(" · "), second.join(" · ")].filter(Boolean)
 }
