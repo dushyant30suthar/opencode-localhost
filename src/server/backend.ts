@@ -41,6 +41,20 @@ export interface Backend {
   /** Idempotent: starts the server only if it is not already answering. */
   start(): Promise<ProviderStatus>
 
+  /**
+   * Make `id` the served model, if the backend can only serve one at a time.
+   *
+   * Optional, and most backends should not implement it: llama.cpp's router
+   * holds every model in models.ini at once, so naming one in a request is all
+   * the selection it needs. TabbyAPI is the exception — one model per process —
+   * so exl3 relaunches against that model's YAML. Called from chat.params,
+   * which is the only place the plugin sees which model a request is for.
+   *
+   * Idempotent: a no-op when `id` is already loaded. Expensive otherwise (a
+   * full stop and reload), so callers should not treat it as free.
+   */
+  ensure?(id: string): Promise<ProviderStatus>
+
   /** Stops a server we started. Never touches one we did not spawn. */
   stop(): Promise<boolean>
 

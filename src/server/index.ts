@@ -87,7 +87,14 @@ const server = async () => ({
     // message is a clear enough signal of intent — the objection was to
     // spawning a server at launch, not to starting one you are about to use.
     const status = await backend.status().catch(() => undefined)
-    if (status && status.state === "stopped") await backend.start().catch(() => {})
+    // A backend that serves one model at a time needs to know WHICH before it
+    // starts, and needs to switch when the picker moves. ensure() covers both,
+    // so calling start() as well would race it into launching the wrong model.
+    if (backend.ensure) {
+      await backend.ensure(input?.model?.id).catch(() => {})
+    } else if (status && status.state === "stopped") {
+      await backend.start().catch(() => {})
+    }
     const values = sampling.get(`${providerID}/${input?.model?.id}`)
     if (!values) return
     // opencode names three of these directly and passes the rest through options

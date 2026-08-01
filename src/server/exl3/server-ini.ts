@@ -30,7 +30,7 @@ export const BACKEND = "exl3"
 export const FILE = path.join(configDir(BACKEND), "server.ini")
 
 /**
- * Matches config-crown.yml's max_seq_len. Advertising more than the YAML's
+ * Matches the served model YAML's max_seq_len. Advertising more than the YAML's
  * value gets requests rejected at the window edge; advertising less wastes
  * cache the server allocated. There is no way to read the YAML's number from
  * the wire, so this must be kept in step by hand.
