@@ -60,7 +60,9 @@ async function executable(file: string): Promise<boolean> {
  * of seconds a checkpoint is streaming into VRAM, which is the answer start()
  * wants while polling anyway.
  */
-async function servedModel(origin: string, timeout: number, apiKey?: string): Promise<string | undefined> {
+type ModelInfo = { id: string; params: Record<string, unknown> }
+
+async function modelInfo(origin: string, timeout: number, apiKey?: string): Promise<ModelInfo | undefined> {
   try {
     const res = await fetch(`${origin}/v1/model`, {
       signal: AbortSignal.timeout(timeout),
@@ -68,10 +70,15 @@ async function servedModel(origin: string, timeout: number, apiKey?: string): Pr
     })
     if (!res.ok) return undefined
     const body: any = await res.json()
-    return typeof body?.id === "string" ? body.id : undefined
+    if (typeof body?.id !== "string") return undefined
+    return { id: body.id, params: body?.parameters ?? {} }
   } catch {
     return undefined
   }
+}
+
+async function servedModel(origin: string, timeout: number, apiKey?: string): Promise<string | undefined> {
+  return (await modelInfo(origin, timeout, apiKey))?.id
 }
 
 async function ready(origin: string, timeout: number, apiKey?: string): Promise<boolean> {
@@ -170,6 +177,21 @@ export function create(): Backend {
    * a checkpoint takes to stream into VRAM.
    */
   let launchedWith: string | undefined
+  /**
+   * Last answer from a live server, and when.
+   *
+   * The panel polls while the server is working, and TabbyAPI stops answering
+   * HTTP for the duration of a deep prefill — a 98k prompt at ~525 T/s is around
+   * three minutes of silence. Without this the panel blanks out mid-session:
+   * provider "stopped", "no model loaded", every field empty, while both GPUs
+   * sit at 100%. Reporting the last known good answer while the process is
+   * still alive is far closer to the truth than reporting nothing.
+   *
+   * Deliberately not time-limited beyond the process check: the thing that
+   * invalidates it is the server going away, and stop()/launch() clear it
+   * directly.
+   */
+  let lastSeen: { model: LoadedModel; at: number } | undefined
 
   // Re-read every time rather than caching, so editing the file takes effect
   // without restarting the process the panel polls from.
@@ -196,6 +218,24 @@ export function create(): Backend {
     const name = os.hostname()
     if (name && ipv4) return `${name}.local:${port()} (${ipv4})`
     return ipv4 ? `${ipv4}:${port()}` : undefined
+  }
+
+  /**
+   * Is the server process we launched still there?
+   *
+   * Distinct from `ready()`: this asks whether the process exists, not whether
+   * it can answer. The two diverge for minutes at a time while TabbyAPI is
+   * prefilling, which is exactly when the panel must not claim it is stopped.
+   */
+  async function serverAlive(cfg: Server.ServerSettings): Promise<boolean> {
+    const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
+    const pid = Number.parseInt(raw.trim(), 10)
+    if (Number.isFinite(pid) && pid > 0) {
+      const cmdline = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")
+      if (cmdline.includes("main.py")) return true
+    }
+    // a server started outside this process still counts as running
+    return cfg.tabbyDir ? (await pidForTabby(cfg.tabbyDir)) !== undefined : false
   }
 
   /** Everything launch needs, or the first thing missing. */
@@ -274,6 +314,12 @@ export function create(): Backend {
     if (await ready(origin(), PROBE_TIMEOUT, cfg.apiKey)) {
       return { state: "running", endpoint: baseURL(), lan: lanAddress() }
     }
+    // Silent but alive — a deep prefill holds TabbyAPI's HTTP for minutes.
+    // Reporting "stopped" here is what made the panel drop the provider,
+    // the model and every field mid-session with both GPUs saturated.
+    if (await serverAlive(cfg)) {
+      return { state: "running", endpoint: baseURL(), lan: lanAddress() }
+    }
     return { state: "stopped" }
   }
 
@@ -341,6 +387,7 @@ export function create(): Backend {
     await fs.mkdir(STATE, { recursive: true }).catch(() => {})
     const log = await fs.open(LOG_FILE, "a").catch(() => undefined)
     launchedWith = yaml
+    lastSeen = undefined
     try {
       const child = spawn(cfg.bin, Server.argv({ ...cfg, config: yaml }), {
         cwd: cfg.tabbyDir,
@@ -383,6 +430,8 @@ export function create(): Backend {
     if (pid === undefined) return false
     const killed = await terminate(pid)
     await fs.rm(PID_FILE, { force: true }).catch(() => {})
+    launchedWith = undefined
+    lastSeen = undefined
     return killed
   }
 
@@ -395,18 +444,38 @@ export function create(): Backend {
     const declared = active
       ? (await ModelsDir.scan()).find((model) => model.file === active)
       : undefined
-    const args: Record<string, string> = {
-      engine: "exllamav3",
-      // the served model's own max_seq_len, not the ini's advertised fallback:
-      // files differ (196608 / 163840 / 131072) and the panel should show the
-      // window this one really loaded with
-      context: String(declared?.context ?? cfg.context),
-      config: collapseHome(active || ""),
+
+    const info = await modelInfo(origin(), PROBE_TIMEOUT, cfg.apiKey)
+    if (info) {
+      const p = info.params
+      const str = (key: string) => (p[key] === undefined || p[key] === null ? undefined : String(p[key]))
+      // Everything worth showing comes from the server's own view of what it
+      // loaded, so the panel cannot drift from reality the way a config-derived
+      // listing does. llamacpp gets the equivalent by parsing llama-server's
+      // launch argv; TabbyAPI hands it over as /v1/model parameters.
+      const args: Record<string, string> = {
+        engine: "exllamav3",
+        context: str("max_seq_len") ?? String(declared?.context ?? cfg.context),
+        cache: [str("cache_size"), str("cache_mode") && `mode ${str("cache_mode")}`]
+          .filter(Boolean)
+          .join(", "),
+        slots: str("max_batch_size") ?? "",
+        chunk: str("chunk_size") ?? "",
+        draft: p["draft"] ? "model" : "mtp (built-in head)",
+        config: collapseHome(active || ""),
+      }
+      for (const key of Object.keys(args)) if (!args[key]) delete args[key]
+      const model: LoadedModel = { id: info.id, args: cfg.remote ? { host: cfg.remote } : args }
+      lastSeen = { model, at: Date.now() }
+      return model
     }
-    const id = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
-    if (id) return { id, args: cfg.remote ? { host: cfg.remote } : args }
 
     if (cfg.remote) return undefined
+
+    // Not answering. A deep prefill blocks TabbyAPI's HTTP for minutes, so
+    // "silent" is not "gone" — if the process we launched is still alive, the
+    // last good answer is the honest one.
+    if (lastSeen && (await serverAlive(cfg))) return lastSeen.model
 
     // not answering yet — is it still coming up, or simply not running?
     const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
@@ -417,8 +486,16 @@ export function create(): Backend {
     } catch {
       return undefined
     }
-    const name = (await configuredModelName(cfg)) ?? "model"
-    return { id: name, args, loading: true, stage: "loading weights" }
+    // Streaming weights into VRAM: the server cannot describe itself yet, so
+    // the YAML about to be served is the only source. Fields the file declares
+    // are real; the rest appear once /v1/model answers.
+    const name = declared?.served ?? (await configuredModelName(cfg)) ?? "model"
+    const pending: Record<string, string> = {
+      engine: "exllamav3",
+      context: String(declared?.context ?? cfg.context),
+      config: collapseHome(active || ""),
+    }
+    return { id: name, args: pending, loading: true, stage: "loading weights" }
   }
 
   /**
