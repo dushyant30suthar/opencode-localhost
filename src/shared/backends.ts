@@ -5,10 +5,9 @@ import os from "os"
 /**
  * The backends this plugin knows about.
  *
- * Only llama.cpp is implemented. The others are listed anyway so the setup
- * screen can tell you what it found and what installing them would take —
- * a greyed row with a real install command is more use than pretending the
- * option does not exist.
+ * The unimplemented ones are listed anyway so the setup screen can tell you what
+ * it found and what installing them would take — a greyed row with a real
+ * install command is more use than pretending the option does not exist.
  *
  * Note these are not the same kind of thing: llama.cpp ships a native binary
  * with prebuilt releases, while vLLM, MLX and OpenVINO are Python packages.
@@ -40,9 +39,14 @@ export const BACKENDS: BackendSpec[] = [
   {
     id: "vllm",
     name: "vLLM",
-    binary: "vllm",
-    install: "pip install vllm",
-    implemented: false,
+    // Not a system binary: vLLM is a Python package that drags torch and a CUDA
+    // runtime behind it, so it belongs in its own venv rather than on $PATH.
+    // python3 here only tells the setup screen an interpreter exists at all —
+    // the row's real requirement is `bin` in its server.ini, pointing at that
+    // venv's vllm executable.
+    binary: "python3",
+    install: "uv venv --python 3.12 && uv pip install vllm, then set bin to <venv>/bin/vllm",
+    implemented: true,
   },
   {
     id: "mlx",
@@ -75,6 +79,17 @@ export const BACKENDS: BackendSpec[] = [
     // are the three REQUIRED keys in that file.
     binary: "python3",
     install: "clone github.com/theroyallab/tabbyAPI, install the exllamav3 wheel in a venv, point bin at that venv's python",
+    implemented: true,
+  },
+  {
+    id: "comfyui",
+    name: "ComfyUI",
+    // The odd one out: not an LLM server at all. It is here because it competes
+    // for the same VRAM as the ones above, and the panel is the only place that
+    // can see all four at once — you cannot start a video model without first
+    // stopping whatever is holding the cards.
+    binary: "python3",
+    install: "clone github.com/comfyanonymous/ComfyUI, uv venv --python 3.12, install torch from a cu128+ index (sm_120 is not in older wheels)",
     implemented: true,
   },
 ]

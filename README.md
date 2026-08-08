@@ -113,9 +113,11 @@ Run `/localhost` and set two things:
 
 ```
  ✓ llama.cpp          /usr/local/bin/llama-server
- ✗ vLLM               not installed — pip install vllm
+ ✓ vLLM               ~/Projects/vllm/venv/bin/vllm
  ✗ MLX                Apple Silicon only
- ✗ OpenVINO           not installed — pip install openvino-genai
+ ✗ OpenVINO           not installed — download the python_on build
+ ✗ exllamav3          not installed — clone tabbyAPI, venv with the exl3 wheel
+ ✗ ComfyUI            not installed — clone ComfyUI, uv venv, torch cu128+
  ✓ Models directory   ~/models
  ○ Server stopped   [start]   127.0.0.1:9337
 ```
@@ -301,9 +303,25 @@ blank if the terminal runs on a different machine from the model server.
 **NVIDIA only for GPU statistics.** Everything else works without a GPU; the
 hardware rows are omitted.
 
-**llama.cpp only, for now.** The architecture is backend-agnostic and the setup
-screen lists vLLM, MLX and OpenVINO with their install state, but only llama.cpp
-is implemented.
+**Five backends, not all of them providers.** llama.cpp, OpenVINO, exllamav3
+(via TabbyAPI), vLLM and ComfyUI are implemented; MLX is listed on the setup
+screen with its install state but is not.
+
+vLLM is shaped like the exllamav3 backend — one model per process, chosen at
+startup — and takes one vLLM `--config` YAML per model under
+`~/.config/opencode/providers/vllm/models/`. The picker keys on the filename, so
+several files may serve one checkpoint and differ only in how; give each a
+distinct `served-model-name` and the backend can adopt a running server instead
+of paying for a reload.
+
+ComfyUI is the odd one. It generates images and video, not chat completions, so
+it deliberately contributes **nothing** to opencode's model picker — you will
+never see a ComfyUI model there, and that is not a bug. It is here because it
+competes for the same VRAM as the engines above: a video model and a 27B coding
+model do not fit on the same two cards at once, and the panel is the only place
+that can see all four and stop one before starting another. What you get is
+`[start]`, `[stop]`, live per-GPU VRAM and sampling progress, plus the address to
+open in a browser.
 
 ## Contributing
 
