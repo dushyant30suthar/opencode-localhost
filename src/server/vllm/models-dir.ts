@@ -24,12 +24,20 @@ import { configDir } from "../../shared/paths.ts"
 
 export type ModelConfig = {
   /**
-   * The YAML's basename, and the id the picker selects by.
+   * The YAML's basename. The internal handle — what launches, and what the
+   * control daemon keys its entries by.
    *
-   * NOT the model string and NOT served-model-name. Several files can serve one
-   * checkpoint and differ only in how — 163k context without vision against
-   * 98k with it, say — and keying on anything the two share collapses them into
-   * one entry, leaving the others unreachable from the panel.
+   * NOT what the picker advertises: that is `served`, because the selected id
+   * becomes the request's `model` field and vLLM answers only to
+   * served-model-name. A file named NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4.yaml
+   * serving `Nemotron-3-Nano-30B-A3B-NVFP4` made every request 404 with
+   * "The model X does not exist".
+   *
+   * The consequence is that **served names must be unique across files**.
+   * Several files can serve one checkpoint and differ only in how — 163k
+   * context without vision against 98k with it, say — and if they share a
+   * served name they collapse into one entry, leaving the others unreachable.
+   * Give each its own alias; vLLM treats served-model-name as free-form.
    */
   id: string
   /** Absolute path to the YAML to launch with. */
@@ -99,5 +107,9 @@ export async function scan(dir: string = DIR): Promise<ModelConfig[]> {
 
 /** The file that serves `id`, or undefined when nothing declares it. */
 export async function fileFor(id: string, dir: string = DIR): Promise<string | undefined> {
-  return (await scan(dir)).find((model) => model.id === id)?.file
+  const declared = await scan(dir)
+  // served-model-name first: that is what the backend advertises and what vLLM
+  // answers to. Falling back to the filename keeps ids recorded before this
+  // resolving, and covers files whose basename and served name agree.
+  return (declared.find((model) => model.served === id) ?? declared.find((model) => model.id === id))?.file
 }

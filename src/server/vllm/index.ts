@@ -359,6 +359,15 @@ export function create(): Backend {
     return res.json().catch(() => undefined)
   }
 
+  /**
+   * Advertised ids are served-model-names; the control daemon keys its entries
+   * by YAML basename. Map back before asking it to start something.
+   */
+  async function controlEntryFor(cfg: Server.ServerSettings, id: string): Promise<any | undefined> {
+    const entries: any[] = (await controlFetch(cfg, "/models"))?.data ?? []
+    return entries.find((entry) => entry?.served === id) ?? entries.find((entry) => entry?.id === id)
+  }
+
   /** Every model the far machine has, not just the one it happens to be serving. */
   async function remoteModels(cfg: Server.ServerSettings): Promise<DiscoveredModel[]> {
     const body = await controlFetch(cfg, "/models")
@@ -367,7 +376,12 @@ export function create(): Backend {
       const id = typeof entry?.id === "string" ? entry.id : undefined
       if (!id) return []
       const context = Number.isFinite(entry?.context) && entry.context > 0 ? entry.context : cfg.context
-      return [describe(id, context, true)]
+      // Advertise served-model-name, NOT the filename. The id we hand opencode
+      // goes straight into the request's "model" field, and vLLM answers only
+      // to served-model-name — a YAML whose basename differs from it produced
+      // "The model X does not exist" for every request.
+      const served = typeof entry?.served === "string" && entry.served ? entry.served : id
+      return [describe(served, context, true)]
     })
   }
 
@@ -392,7 +406,11 @@ export function create(): Backend {
     if (!cfg.remote && !cfg.config) {
       const declared = await ModelsDir.scan()
       if (declared.length > 0) {
-        return declared.map((model) => describe(model.id, model.context ?? cfg.context, false))
+        // served-model-name, not the filename — the advertised id becomes the
+        // request's "model" field and vLLM answers only to the served name.
+        return declared.map((model) =>
+          describe(model.served || model.id, model.context ?? cfg.context, false),
+        )
       }
     }
 
@@ -654,8 +672,8 @@ export function create(): Backend {
       const cfg = await config()
       if (cfg.remote) {
         if (!cfg.control) return status()
-        const wantedId = id ?? (await remoteModels(cfg))[0]?.id
-        if (wantedId) await controlFetch(cfg, "/start", { method: "POST", body: { id: wantedId } })
+        const entry = id ? await controlEntryFor(cfg, id) : ((await controlFetch(cfg, "/models"))?.data ?? [])[0]
+        if (entry?.id) await controlFetch(cfg, "/start", { method: "POST", body: { id: entry.id } })
         return status()
       }
       const missing = await unconfigured(cfg)
@@ -696,22 +714,22 @@ export function create(): Backend {
     // which case selecting a model here is meant to switch it there.
     if (cfg.remote) {
       if (!cfg.control) return status()
-      const listed = await remoteModels(cfg)
-      const wantedRemote = listed.find((model) => model.id === id)
+      const entry = await controlEntryFor(cfg, id)
       // Unknown id: leave the far machine alone rather than unloading a working
       // model for one it does not have.
-      if (!wantedRemote) return status()
+      if (!entry) return status()
       const current = await servedModel(origin(), PROBE_TIMEOUT, cfg.apiKey)
-      const info = (await controlFetch(cfg, "/models"))?.data?.find((entry: any) => entry?.id === id)
-      if (current && info?.served && current === info.served) return status()
-      await controlFetch(cfg, "/start", { method: "POST", body: { id } })
+      if (current && entry.served && current === entry.served) return status()
+      await controlFetch(cfg, "/start", { method: "POST", body: { id: entry.id } })
       await ready(origin(), START_TIMEOUT, cfg.apiKey)
       return status()
     }
     // The single-model override means there is nothing to choose between.
     if (cfg.config) return start()
 
-    const wanted = (await ModelsDir.scan()).find((model) => model.id === id)
+    const declaredAll = await ModelsDir.scan()
+    const wanted =
+      declaredAll.find((model) => model.served === id) ?? declaredAll.find((model) => model.id === id)
     // Unknown id: leave whatever is running alone rather than tearing down a
     // working server for a model this machine cannot serve.
     if (!wanted) return status()
