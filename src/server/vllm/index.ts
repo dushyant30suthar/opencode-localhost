@@ -328,11 +328,61 @@ export function create(): Backend {
     }
   }
 
+
+  /**
+   * A remote vLLM cannot be enumerated or switched on its own: it serves ONE
+   * model per process, so /v1/models reports only that one and there is no
+   * discovery endpoint to ask. (llama.cpp needs nothing like this — its
+   * llama-server scans models-dir itself and swaps on demand, so its /models
+   * already lists everything. The difference is the server, not the backend.)
+   *
+   * `control` in server.ini points at a small daemon on the far machine that
+   * closes exactly that gap: it lists the YAMLs, and starts/stops the engine.
+   * Inference still goes straight to the vLLM port; this is not a proxy.
+   */
+  const controlURL = (cfg: Server.ServerSettings) => (cfg.control ? `http://${cfg.control}` : undefined)
+
+  async function controlFetch(
+    cfg: Server.ServerSettings,
+    route: string,
+    init?: { method?: string; body?: unknown; timeout?: number },
+  ): Promise<any | undefined> {
+    const base = controlURL(cfg)
+    if (!base) return undefined
+    const res = await fetch(`${base}${route}`, {
+      method: init?.method ?? "GET",
+      signal: AbortSignal.timeout(init?.timeout ?? PROBE_TIMEOUT * 4),
+      headers: init?.body ? { "Content-Type": "application/json" } : undefined,
+      body: init?.body ? JSON.stringify(init.body) : undefined,
+    }).catch(() => undefined)
+    if (!res?.ok) return undefined
+    return res.json().catch(() => undefined)
+  }
+
+  /** Every model the far machine has, not just the one it happens to be serving. */
+  async function remoteModels(cfg: Server.ServerSettings): Promise<DiscoveredModel[]> {
+    const body = await controlFetch(cfg, "/models")
+    const entries: any[] = Array.isArray(body?.data) ? body.data : []
+    return entries.flatMap((entry) => {
+      const id = typeof entry?.id === "string" ? entry.id : undefined
+      if (!id) return []
+      const context = Number.isFinite(entry?.context) && entry.context > 0 ? entry.context : cfg.context
+      return [describe(id, context, true)]
+    })
+  }
+
   async function models(): Promise<DiscoveredModel[]> {
     const cfg = await config()
     if (!cfg.remote) {
       const missing = await unconfigured(cfg)
       if (missing) return []
+    }
+
+    // Remote with a control daemon: it can enumerate, so show everything.
+    // Without one we can only report what /v1/models admits to serving.
+    if (cfg.remote && cfg.control) {
+      const listed = await remoteModels(cfg)
+      if (listed.length > 0) return listed
     }
 
     // Local, models/ in use: list every YAML. Only one can be SERVED at a time,
@@ -400,8 +450,12 @@ export function create(): Backend {
 
   async function stop(): Promise<boolean> {
     const cfg = await config()
-    // Not ours to stop.
-    if (isRemote()) return false
+    // Not ours to stop — unless the far machine gave us a control daemon.
+    if (isRemote()) {
+      if (!cfg.control) return false
+      const body = await controlFetch(cfg, "/stop", { method: "POST", timeout: START_TIMEOUT })
+      return body?.stopped === true
+    }
     const raw = await fs.readFile(PID_FILE, "utf8").catch(() => "")
     const recorded = Number.parseInt(raw.trim(), 10)
     let pid: number | undefined
@@ -598,7 +652,12 @@ export function create(): Backend {
     if (starting) return starting
     starting = (async () => {
       const cfg = await config()
-      if (cfg.remote) return status()
+      if (cfg.remote) {
+        if (!cfg.control) return status()
+        const wantedId = id ?? (await remoteModels(cfg))[0]?.id
+        if (wantedId) await controlFetch(cfg, "/start", { method: "POST", body: { id: wantedId } })
+        return status()
+      }
       const missing = await unconfigured(cfg)
       if (missing) return missing
       const yaml = await yamlFor(cfg, id)
@@ -633,8 +692,22 @@ export function create(): Backend {
    */
   async function ensure(id: string): Promise<ProviderStatus> {
     const cfg = await config()
-    // A remote decides its own model; asking it to switch is not ours to do.
-    if (cfg.remote) return status()
+    // A remote decides its own model — unless it exposes a control daemon, in
+    // which case selecting a model here is meant to switch it there.
+    if (cfg.remote) {
+      if (!cfg.control) return status()
+      const listed = await remoteModels(cfg)
+      const wantedRemote = listed.find((model) => model.id === id)
+      // Unknown id: leave the far machine alone rather than unloading a working
+      // model for one it does not have.
+      if (!wantedRemote) return status()
+      const current = await servedModel(origin(), PROBE_TIMEOUT, cfg.apiKey)
+      const info = (await controlFetch(cfg, "/models"))?.data?.find((entry: any) => entry?.id === id)
+      if (current && info?.served && current === info.served) return status()
+      await controlFetch(cfg, "/start", { method: "POST", body: { id } })
+      await ready(origin(), START_TIMEOUT, cfg.apiKey)
+      return status()
+    }
     // The single-model override means there is nothing to choose between.
     if (cfg.config) return start()
 

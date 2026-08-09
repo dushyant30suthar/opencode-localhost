@@ -33,6 +33,9 @@ export const FILE = path.join(configDir(BACKEND), "server.ini")
  */
 const DEFAULT_CONTEXT = 32_768
 
+/** Port the vLLM control daemon listens on. See `control` in the template. */
+const CONTROL_PORT = 8900
+
 const TEMPLATE = `# vLLM settings for opencode-localhost.
 # Changing anything here restarts the server.
 #
@@ -46,6 +49,15 @@ const TEMPLATE = `# vLLM settings for opencode-localhost.
 #              resolves each model from its YAML's own 'model:' key, which may
 #              equally be an HF repo id it downloads itself
 #   remote     point at ANOTHER machine's vLLM, e.g. fedora.local:8000
+#   control    OPTIONAL, remote only. Address of that machine's vLLM control
+#              daemon, e.g. fedora.local:8900. Without it a remote shows only
+#              the ONE model currently loaded and cannot be switched from here,
+#              because vLLM serves a single model per process and /v1/models
+#              reports just that one — there is nothing to enumerate. (llama.cpp
+#              needs no equivalent: llama-server scans models-dir itself and
+#              swaps on demand, so its /models already lists everything.)
+#              With it set, this backend lists every model the far machine has
+#              and selecting one restarts it there.
 #   host/port  must match what the YAML binds; used to reach, not to bind
 #              (host IS passed as --host, so 127.0.0.1 really is loopback-only)
 #   context    fallback window advertised when a YAML declares no max-model-len
@@ -76,6 +88,7 @@ bin =
 config =
 models-dir =
 remote =
+control =
 host = 0.0.0.0
 port = 8000
 context = ${DEFAULT_CONTEXT}
@@ -92,6 +105,7 @@ export type ServerSettings = {
   config: string
   modelsDir: string
   remote: string
+  control: string
   host: string
   port: number
   context: number
@@ -104,6 +118,7 @@ const DEFAULTS: ServerSettings = {
   config: "",
   modelsDir: "",
   remote: "",
+  control: "",
   host: "0.0.0.0",
   port: 8000,
   context: DEFAULT_CONTEXT,
@@ -150,6 +165,12 @@ export async function load(): Promise<ServerSettings> {
     remote: withDefaultPort(
       (raw["remote"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
       DEFAULTS.port,
+    ),
+    // same normalisation as remote, but defaulted to the control daemon's port
+    // rather than vLLM's — they are different services on the same machine
+    control: withDefaultPort(
+      (raw["control"] ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, ""),
+      CONTROL_PORT,
     ),
     host: (raw["host"] || DEFAULTS.host).trim(),
     port: number(raw["port"], DEFAULTS.port),
