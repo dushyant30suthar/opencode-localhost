@@ -45,6 +45,13 @@ function providerEntry(backend: Backend, models: DiscoveredModel[]) {
           limit: { context: model.context, output: model.output },
           cost: { input: 0, output: 0 },
           options: {},
+          // opencode defaults custom models to text-only and strips images
+          // before they reach the server. Advertise image input only for models
+          // the backend knows are vision-capable; the rest stay as opencode
+          // sees them (text-only) rather than claiming support they lack.
+          ...(model.vision
+            ? { modalities: { input: ["text", "image"], output: ["text"] } }
+            : {}),
         },
       ]),
     ),

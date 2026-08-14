@@ -356,7 +356,7 @@ export function create(): Backend {
   }
 
   /** Shared shaping so every path advertises a model the same way. */
-  function describe(id: string, context: number, remote: boolean): DiscoveredModel {
+  function describe(id: string, context: number, remote: boolean, vision?: boolean): DiscoveredModel {
     return {
       id,
       // Drop only the "-exl3" marker — the format is already implied by the
@@ -370,6 +370,7 @@ export function create(): Backend {
       output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
       // a remote applies its own sampling; overriding from here fights it
       sampling: remote ? {} : settings!.sampling,
+      vision,
     }
   }
 
@@ -387,7 +388,9 @@ export function create(): Backend {
     if (!cfg.remote && !cfg.config) {
       const declared = await ModelsDir.scan()
       if (declared.length > 0) {
-        return declared.map((model) => describe(model.id, model.context ?? cfg.context, false))
+        return declared.map((model) =>
+          describe(model.id, model.context ?? cfg.context, false, model.vision),
+        )
       }
     }
 

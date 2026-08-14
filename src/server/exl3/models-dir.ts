@@ -41,6 +41,12 @@ export type ModelConfig = {
   served: string
   /** max_seq_len, so the panel advertises the window the model really loads. */
   context?: number
+  /**
+   * The YAML's `vision:` flag. True means the vision tower is loaded and the
+   * model accepts image input; undefined means the file did not say, so the
+   * backend reports nothing rather than guessing.
+   */
+  vision?: boolean
 }
 
 export const DIR = path.join(configDir("exl3"), "models")
@@ -69,11 +75,13 @@ export async function scan(dir: string = DIR): Promise<ModelConfig[]> {
     // not a model — skip rather than advertise something unselectable.
     if (!served) continue
     const seq = Number.parseInt(field(raw, "max_seq_len") ?? "", 10)
+    const vision = field(raw, "vision")
     found.push({
       id: entry.name.replace(/\.ya?ml$/i, ""),
       file,
       served,
       context: Number.isFinite(seq) ? seq : undefined,
+      vision: vision === undefined ? undefined : vision.toLowerCase() === "true",
     })
   }
   return found.sort((a, b) => a.id.localeCompare(b.id))

@@ -313,7 +313,7 @@ export function create(): Backend {
   }
 
   /** Shared shaping so every path advertises a model the same way. */
-  function describe(id: string, context: number, remote: boolean): DiscoveredModel {
+  function describe(id: string, context: number, remote: boolean, vision?: boolean): DiscoveredModel {
     return {
       id,
       // Strip a leading HF org and any quant marker, keep everything after it:
@@ -325,6 +325,7 @@ export function create(): Backend {
       output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
       // a remote applies its own sampling; overriding from here fights it
       sampling: remote ? {} : settings!.sampling,
+      vision,
     }
   }
 
@@ -409,15 +410,22 @@ export function create(): Backend {
         // served-model-name, not the filename — the advertised id becomes the
         // request's "model" field and vLLM answers only to the served name.
         return declared.map((model) =>
-          describe(model.served || model.id, model.context ?? cfg.context, false),
+          describe(model.served || model.id, model.context ?? cfg.context, false, model.vision),
         )
       }
     }
 
-    const served = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
-    const id = served ?? (cfg.config ? (await ModelsDir.scan()).find((m) => m.file === cfg.config)?.served : undefined)
+    const info = await modelInfo(origin(), PROBE_TIMEOUT, cfg.apiKey)
+    const served = info?.id
+    const configured = cfg.config ? (await ModelsDir.scan()).find((m) => m.file === cfg.config) : undefined
+    const id = served ?? configured?.served
     if (!id) return []
-    return [describe(id, cfg.context, !!cfg.remote)]
+    // /v1/models carries the window the engine BUILT, clamped down by vLLM when
+    // the KV cache cannot cover the YAML's request — worth more than the server
+    // default, and the only truthful number a remote can learn without control.
+    const rawLen = info ? (info.params.max_model_len as number | undefined) : undefined
+    const maxLen = Number.isFinite(rawLen) && (rawLen as number) > 0 ? (rawLen as number) : undefined
+    return [describe(id, maxLen ?? cfg.context, !!cfg.remote, configured?.vision)]
   }
 
   async function launch(cfg: Server.ServerSettings, yaml: string): Promise<ProviderStatus> {

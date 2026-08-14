@@ -1,4 +1,5 @@
 import fs from "fs/promises"
+import os from "os"
 import path from "path"
 import { configDir } from "../../shared/paths.ts"
 
@@ -52,13 +53,63 @@ export type ModelConfig = {
    * checkpoint folder and has no alias of its own.
    */
   served: string
-  /** The model vLLM loads: an HF repo id, or an absolute path to a checkout. */
+  /**
+   * The model vLLM loads: an HF repo id, or an absolute path to a checkout. */
   model: string
   /** max-model-len, so the panel advertises the window the model really loads. */
   context?: number
+  /**
+   * Whether the checkpoint carries a vision tower. Undefined means the detection
+   * could not run (weights not on disk yet), so the backend reports nothing
+   * rather than guessing.
+   *
+   * Unlike exl3 there is no `vision:` YAML key to read: these files ARE the
+   * `vllm serve --config` dict, so an extra key would be passed to the engine
+   * and rejected. The truth has to come from the checkpoint's own config.json.
+   */
+  vision?: boolean
 }
 
 export const DIR = path.join(configDir("vllm"), "models")
+
+/**
+ * Is there a vision tower in this checkpoint's config.json?
+ *
+ * `model` is either an absolute path to a checkout, or an HF repo id. The first
+ * is read where it is; the second is resolved through the HF hub cache, on the
+ * assumption vLLM has pulled it there. A missing file or a malformed json just
+ * means "cannot tell" — undefined, which reads as text-only rather than a hard
+ * claim of vision.
+ */
+async function hasVision(model: string): Promise<boolean | undefined> {
+  let configFile: string | undefined
+  if (path.isAbsolute(model)) {
+    configFile = path.join(model, "config.json")
+  } else if (/^[^/]+\/[^/]+$/.test(model)) {
+    const [org, name] = model.split("/")
+    const hub = path.join(os.homedir(), ".cache", "huggingface", "hub", `models--${org}--${name}`)
+    const snapshots = await fs.readdir(path.join(hub, "snapshots")).catch(() => [])
+    // multiple snapshots → prefer the one with config.json; there is usually one
+    for (const snapshot of snapshots) {
+      const candidate = path.join(hub, "snapshots", snapshot, "config.json")
+      if ((await fs.stat(candidate).catch(() => undefined))?.isFile()) {
+        configFile = candidate
+        break
+      }
+    }
+  }
+  if (!configFile) return undefined
+  const raw = await fs.readFile(configFile, "utf8").catch(() => undefined)
+  if (!raw) return undefined
+  try {
+    const config = JSON.parse(raw)
+    const vision: unknown = config?.vision_config
+    // a declared tower carries its own model_type; token ids alone are not proof
+    return typeof vision === "object" && vision !== null && "model_type" in vision
+  } catch {
+    return undefined
+  }
+}
 
 /**
  * No YAML parser on purpose — the same trade exl3's models-dir.ts makes. Every
@@ -100,6 +151,7 @@ export async function scan(dir: string = DIR): Promise<ModelConfig[]> {
       served: field(raw, "served-model-name") ?? model,
       model,
       context: Number.isFinite(len) ? len : undefined,
+      vision: await hasVision(model),
     })
   }
   return found.sort((a, b) => a.id.localeCompare(b.id))

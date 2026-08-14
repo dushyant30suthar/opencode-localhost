@@ -18,6 +18,12 @@ export type DiscoveredModel = {
   output: number
   /** Sampling to send per request, so opencode's own defaults never override. */
   sampling: Record<string, number>
+  /**
+   * Advertise image input to opencode. Undefined means "unknown", which opencode
+   * treats as text-only — so a backend must set this where it can read the truth
+   * (exl3: the YAML's `vision:` key; llama.cpp: an mmproj beside the GGUF).
+   */
+  vision?: boolean
 }
 
 export interface Backend {
