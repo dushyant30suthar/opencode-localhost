@@ -36,6 +36,10 @@ function providerEntry(backend: Backend, models: DiscoveredModel[]) {
       baseURL: backend.baseURL(),
       // the SDK requires some value; an unauthenticated server ignores it
       apiKey: backend.apiKey() ?? "local",
+      // Local models can legitimately take longer than opencode's default
+      // 5-minute total request timeout (a long single generation with a
+      // reasoning model can exceed it and get aborted mid-stream). Disable it.
+      timeout: false,
     },
     models: Object.fromEntries(
       models.map((model) => [
