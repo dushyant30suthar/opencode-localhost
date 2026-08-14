@@ -56,6 +56,8 @@ async function walk(dir: string, relative: string[], out: Found[]): Promise<void
       mmproj = entry.name
       continue
     }
+    // draft/MTP heads are spec-draft-model inputs, never standalone models
+    if (/^(?:mtp|draft|dflash|ddraft)-/i.test(entry.name)) continue
     // multi-shard models: only the first shard is passed to llama-server
     if (/-\d{5}-of-\d{5}\.gguf$/i.test(entry.name)) {
       if (entry.name.includes("-00001-of-")) files.push(entry.name)
