@@ -171,6 +171,11 @@ export function create(): Backend {
         context,
         output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
         sampling: {},
+        // the router reports each preset's planned args even while unloaded, and
+        // --mmproj is present iff the section loads a vision tower. Without this
+        // a remote client (the laptop) sees every model as text-only and opencode
+        // strips image parts before they leave the machine.
+        vision: args["mmproj"] !== undefined,
       }]
     })
   }
@@ -196,6 +201,10 @@ export function create(): Backend {
         // half the window, capped, leaves room for a long plan without truncating
         output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
         sampling: entry?.sampling ?? {},
+        // discovery found an mmproj beside the weights, so the server loads the
+        // vision tower and the model can take images. Without this opencode
+        // treats the model as text-only and strips image parts client-side.
+        vision: !!model.mmproj,
       }
     })
   }
