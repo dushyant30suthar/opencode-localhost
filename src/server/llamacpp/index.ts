@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import os from "os"
-import { spawn } from "child_process"
+import { spawn, execFile } from "child_process"
 import { stateDir, collapseHome } from "../../shared/paths.ts"
 import type { LoadEvent, LoadedModel, ProviderStatus } from "../../shared/types.ts"
 import type { Backend, DiscoveredModel } from "../backend.ts"
@@ -283,21 +283,44 @@ export function create(): Backend {
     const family: { router?: number; children: number[] } = { children: [] }
     const orphans: number[] = []
     const entries = await fs.readdir("/proc").catch(() => [] as string[])
-    for (const entry of entries) {
-      const pid = Number.parseInt(entry, 10)
-      if (!Number.isFinite(pid) || pid <= 0) continue
-      const exe = await fs.readlink(`/proc/${pid}/exe`).catch(() => "")
-      if (!exe.includes("llama-server")) continue
-      const raw = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")
-      const args = raw.split("\0")
-      const isRouter = args.includes("--models-preset") || args.includes("--models-dir")
-      if (isRouter) {
-        const at = args.indexOf("--port")
-        if (at >= 0 && args[at + 1] === String(port)) family.router = pid
-        continue
+    if (entries.length > 0) {
+      for (const entry of entries) {
+        const pid = Number.parseInt(entry, 10)
+        if (!Number.isFinite(pid) || pid <= 0) continue
+        const exe = await fs.readlink(`/proc/${pid}/exe`).catch(() => "")
+        if (!exe.includes("llama-server")) continue
+        const raw = await fs.readFile(`/proc/${pid}/cmdline`, "utf8").catch(() => "")
+        const args = raw.split("\0")
+        const isRouter = args.includes("--models-preset") || args.includes("--models-dir")
+        if (isRouter) {
+          const at = args.indexOf("--port")
+          if (at >= 0 && args[at + 1] === String(port)) family.router = pid
+          continue
+        }
+        // a spawned model server carries an explicit --model path
+        if (args.includes("--model")) orphans.push(pid)
       }
-      // a spawned model server carries an explicit --model path
-      if (args.includes("--model")) orphans.push(pid)
+    } else {
+      const psOut = await new Promise<string>((resolve) => {
+        execFile("ps", ["ax", "-o", "pid=", "-o", "args="], { timeout: 2000 }, (error, stdout) => {
+          if (error) resolve("")
+          else resolve(stdout)
+        })
+      }).catch(() => "")
+      for (const line of psOut.trim().split("\n")) {
+        const spaceIdx = line.indexOf(" ")
+        if (spaceIdx < 0) continue
+        const pid = Number.parseInt(line.slice(0, spaceIdx).trim(), 10)
+        const args = line.slice(spaceIdx + 1).split(/\s+/)
+        if (!line.includes("llama-server")) continue
+        const isRouter = args.includes("--models-preset") || args.includes("--models-dir")
+        if (isRouter) {
+          const at = args.indexOf("--port")
+          if (at >= 0 && args[at + 1] === String(port)) family.router = pid
+          continue
+        }
+        if (args.includes("--model")) orphans.push(pid)
+      }
     }
     // Every spawned model server counts, whatever its parent says: after a
     // router crash or restart the children re-parent to init, and those are
@@ -363,6 +386,9 @@ export function create(): Backend {
     if (Number.isFinite(recorded) && recorded > 0 && family.router === undefined) {
       const exe = await fs.readlink(`/proc/${recorded}/exe`).catch(() => "")
       if (exe.includes("llama-server")) family.router = recorded
+      if (family.router === undefined && !exe) {
+        family.router = recorded
+      }
     }
 
     if (family.router === undefined && family.children.length === 0) {
