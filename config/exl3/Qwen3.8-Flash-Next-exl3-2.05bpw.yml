@@ -1,0 +1,178 @@
+# Qwen3.8-Flash-Next EXL3 2.05bpw (h4_ng4) — BRING-UP profile, 32k context.
+#
+# Checkpoint: turboderp/Qwen3.8-Flash-Next-exl3 @ revision 2.05bpw_h4_ng4
+# (https://huggingface.co/turboderp/Qwen3.8-Flash-Next-exl3/tree/2.05bpw_h4_ng4)
+# Download with the fetch script next to the checkpoints:
+#     ~/.lmstudio/models/turboderp/fetch-flash-next-2.05bpw.sh
+# (~62.8 GB: 5 main shards ~36.4 GB + ngram_embedding.safetensors ~26.2 GB.)
+#
+# Official base: Qwen/Qwen3.8-Flash-Next (qwen4_exp arch, 48 layers).
+# Model overview (from the official card — check, don't trust this comment):
+#   125B MoE (6B activated, 512 experts, 10 routed + 1 shared) + 51B n-gram
+#   embedding (20M bigrams/trigrams, layer 2) + 4B MTP (1 layer).
+#   Hybrid attention: 36x Gated DeltaNet (linear, recurrent state in sysmem)
+#   + 12x Qwen Sparse Attention (full, indexer budget 512 blocks/2048 tokens).
+#   Native context 262144, extensible to 1M via YaRN (see the official card).
+#
+# Branch name decodes as: 2.05 bpw weights / head 4-bit / n-gram 4-bit
+# (quantization_config: bits 2.05, head_bits 4, vision_bits 4, mtp_bits 2).
+# Requires exllamav3 >= v1.4.5 — this box runs 1.4.8, satisfied.
+#
+# N-GRAM (the 26 GB table): exllamav3 STREAMS it from disk by default
+# (EXL3_NGRAM_STREAM=1, see model/config.py). Do NOT set EXL3_NGRAM_STREAM=0
+# on this box: 26 GB resident would leave ~5 GB RAM for everything else
+# (31 GB total, ~14 GB available). Streaming costs some decode speed on
+# HDD; keep the checkpoint on NVMe if possible.
+#
+# VRAM — ESTIMATED, NOT MEASURED (nothing below has been load-tested):
+# main shards are ~36 GB on disk for ~125B weights at 2.05bpw + MTP + scales,
+# against 2x16 GB (32 GB) VRAM. The weights ALONE likely exceed both cards,
+# so this profile offloads MoE layers to CPU (cpu_moe_offload_layers: 12)
+# and starts at a 32k pool. The 8,8 KV pool is small on this hybrid (only
+# 12 of 48 layers are full attention: 24 Q heads, 2 KV heads, dim 256 ->
+#   12 x 2 (K+V) x 2 heads x 256 dim x 1 byte = 24 KiB/token, 12/card,
+# plus the MTP drafter's cache on cuda:0), so the pool is not the problem —
+# the weights are. If the load throws "Insufficient VRAM", raise
+# cpu_moe_offload_layers (999 = all MoE on CPU, slowest) before touching
+# anything else. If exllamav3 rejects TP + MoE offload together, flip
+# tensor_parallel to false (layer-split mode, the only mode the standalone
+# --moe_cpu_offload flag supports) and retune gpu_split from there.
+# gpu_split below is copied from the 27B canonical and is a GUESS here.
+#
+# Draft: MTP head baked into the weights (draft_mode mtp, blank name), same
+# as the 27B profiles. Requires the tp-draft-conf branch in
+# ~/Projects/exllamav3 (dynamic_draft is a silent no-op on stock dev under
+# tensor parallel). 4 draft tokens: raising it was measurably worse on 27B.
+#
+# Vision: OFF here (text-only bring-up; saves the ~1 GiB tower on cuda:0).
+# The tower ships in the shards; a -vision variant is vision: true + a
+# smaller pool, same as the 27B vision profile.
+#
+# Sampling: Qwen's official thinking-mode preset via override_preset
+# qwen38_thinking (1.0 / 0.95 / 20 / 0 / 0 / 1.0). Flash-Next thinks by
+# default; disable per-request with chat_template_kwargs enable_thinking
+# false (instruct mode: 0.7 / 0.80 / 20 / 0 / 1.5 / 1.0).
+
+network:
+  host: 0.0.0.0
+  port: 5000
+  disable_auth: true
+
+logging:
+  log_prompt: false
+  log_generation_params: false
+  log_requests: false
+  log_chat_completion_requests: false
+
+model:
+  model_dir: /home/dushyant30suthar/.lmstudio/models/turboderp
+  model_name: Qwen3.8-Flash-Next-exl3-2.05bpw_h4_ng4
+
+  # 32768 = 128 x 256: bring-up pool, deliberately small. cache_size must be
+  # a multiple of PAGE_SIZE (256). Raise only after the weights load — the
+  # pool is ~24 KiB/token at 8,8 (see header), so depth is cheap; the ~36 GB
+  # of weights is what has to fit first.
+  # 2026-09-13: context ladder. Measured 54.2 KiB/token all-in (KV + MTP draft
+  # cache + workspace), so each +32k tokens costs ~1.8 GiB total VRAM and must
+  # be paid for with CPU-offloaded MoE layers (~0.7-0.8 GiB/layer/GPU) at the
+  # cost of decode speed. Rung 1: 65536 @17 — PROVEN (61k prefill http 200 at
+  # 427 T/s, 1602/1032 MiB free after; short decode 16.67 T/s, no cost vs 15).
+  # Rung 2: 131072 @19 (needs ~+3.5 GiB vs rung 1; 18 would leave cuda:1 with
+  # ~900 MiB against a ~1600 need, so straight to 19). PROVEN (122k prefill
+  # http 200 at 394 T/s, 1250/1288 MiB free after; short decode 14.09 T/s).
+  # dmon during decode: SM 12-18% bursts alternating with zeros — GPUs starved
+  # by the 19 CPU layers, not mis-split. So spend the headroom on GPU layers:
+  # 19 -> 18 (one layer back to GPU, ~0.75 GiB; expect ~1400/1200 idle free).
+  # NOTE moe_cpu_split (per-layer tail-expert overlap) exists but is mutually
+  # exclusive with offload and needs full weights in VRAM — not viable here.
+  cache_size: 131072
+  max_seq_len: 131072
+  cache_mode: 8,8
+
+  max_batch_size: 1
+  # TP is not implemented for qwen4_exp in exllamav3 1.4.8 (NotImplementedError
+  # at model.py:444) — layer-split mode. See header.
+  tensor_parallel: false
+  gpu_split_auto: false
+  # COPIED from the 27B canonical — unmeasured guess for this checkpoint.
+  # See the header: tune only after a successful load, with several reps
+  # (decode is bimodal; single samples lie).
+  # 2026-09-13 pack-to-14.9 step 1: split[0] 12.5 -> 13.5 to shift ~1 GiB of
+  # layers G1 -> G0 (was 13.39/14.29 used). The 13.9 OOM was the 32k/16 regime;
+  # cache is bigger now so this may still fail — measurement decides.
+  gpu_split: [13.5, 16.0]
+  # 2026-09-13 pack-to-14.9 step 1: 512 -> 256. Pure loader holdback (upstream
+  # default is 96); frees 256 MiB/GPU toward the target. Depth test is the
+  # real safety proof, not this number.
+  autosplit_reserve: [256, 256]
+  # Number of MoE layers to run on CPU. REQUIRED guess: weights (~36 GB on
+  # disk) exceed the 32 GB across both cards. Raise toward 999 if the load
+  # OOMs; lower toward 0 if it loads with room to spare (faster).
+  # 2026-09-13: 20 -> 16 for decode speed (user choice). Safe only with the
+  # rebalanced split [12.5, 16.0]: at 16 + old split [13.9, 16.0], cuda:0 hit
+  # 15.06/15.52 GiB and OOMed. If "aborted" returns under concurrency, this
+  # is the first knob to turn back up.
+  # 2026-09-13: 16 -> 12 step-down OOMed at load ("Insufficient VRAM in split
+  # for model and cache"), so 4 layers exceed the ~2.0 GiB free/card at 16.
+  # 14 loaded (+11% decode, 17.07 vs 15.35 T/s) but OOMed cuda:1 on a ~15k
+  # prefill (needed 48 MiB, 17 MiB free) — below the proven ~700 MiB floor.
+  # Trying 15 (1 layer to GPU) next; must survive the same 15k prefill.
+  # RESULT 15 KEPT: loads at 2246/1158 MiB free (cuda:0/cuda:1), decode 16.26
+  # short-prompt / 18.2-18.5 post-prefill vs 15.35-15.52 at 16 (+6-19%, single
+  # samples), and survives the pool-max 30.6k prefill (http 200, 425 T/s with
+  # a prefix-cache hit, 434 MiB left on cuda:1). Thin but proven to the deepest
+  # prompt this 32768 pool allows; with max_batch_size 1 there is no concurrent
+  # peak above that. Do NOT go to 14 without first stepping chunk_size
+  # 2048 -> 1024 (prefill transients scale with the chunk).
+  # 2026-09-13 context ladder rung 2 (131k): 19 -> 18 to feed the starved GPUs.
+  # PROVEN (122k prefill http 200 at 406 T/s, draft 75%, 1282/616 MiB after).
+  # A/B EXL3_MOE_CPU_THREADS 3 (default cpu_count/2) vs 5, short decode,
+  # matched ~51% draft accept: 15.23 vs 14.93 T/s. No win — extra threads
+  # contest the server loop on 6 HT-less cores. Leave unset (default 3).
+  # 2026-09-13 pack-to-14.9 step 1 PROVEN: split[0] 12.5->13.5, draft FP16->Q8,
+  # reserve 512->256 @18 loads at 14284/13932 MiB (13.95/13.60 GiB) — balanced
+  # vs 13.39/14.29 before; draft accept 50.8% intact, decode 15.12 (wash).
+  # NOTE draft_cache_mode takes only FP16/Q8/Q6/Q4 literals (pair fails valid).
+  # Step 2: 18 -> 17 (expect ~+0.75 GiB on cuda:1).
+  # RESULT: landed on cuda:0 instead (split[0]=13.5 raised its budget):
+  # 14284/13932 -> 14924/13900 (14.57/13.57 GiB). Idle cuda:0 margin 966 MiB
+  # is below anything depth-proven — depth test AFTER final packing only.
+  # Step 3: 17 -> 16, keep split. If cuda:0 overfills, push split[0] down to
+  # spill toward cuda:1 instead.
+  # RESULT: layer went to cuda:1 (reshuffle): 14924/13900 -> 14764/14636 MiB
+  # (14.42/14.29 GiB idle). PROVEN at 122k: http 200, 434 T/s prefill, 258/616
+  # MiB left — just above the 200 floor. Short decode ~15.1 (wash vs 15.23).
+  # NOTE 14.9-idle + 122k-depth cannot coexist: depth growth (~+870/+640) would
+  # breach the 15.52 cap. The last 0.5 GiB needs cache 8,4 or chunk 1024 first.
+  cpu_moe_offload_layers: 16
+  chunk_size: 2048
+  # one SSE event per token so bench harnesses can count decode exactly
+  output_chunking: false
+
+  vision: false
+  reasoning: true
+  tool_format: qwen3_coder
+  template_vars_force:
+    preserve_thinking: true
+
+draft_model:
+  draft_mode: mtp
+  draft_model_dir: /home/dushyant30suthar/.lmstudio/models/turboderp
+  # blank on purpose: draft_mode mtp with no name uses the MTP head baked into
+  # the weights. Confirm with "Using main model MTP component" in the log.
+  draft_model_name:
+  # 2026-09-13 pack-to-14.9 step 1: FP16 -> Q8 (= 8,8; this field takes only
+  # FP16/Q8/Q6/Q4 literals, pair syntax fails validation). Saves ~130 MiB on
+  # cuda:0; 1-layer draft, acceptance-tested after (want ~50%+ like the
+  # 45-75% band).
+  draft_cache_mode: Q8
+  draft_num_tokens: 4
+  # Only actually does anything on tp-draft-conf. Inert on stock dev.
+  dynamic_draft: true
+
+sampling:
+  override_preset: qwen38_thinking
+
+memory:
+  sysmem_recurrent_cache: 4096
+  cuda_malloc_async: true
