@@ -112,23 +112,24 @@ const server = async () => ({
       await backend.start().catch(() => {})
     }
     const modelID = String(input?.model?.id ?? "")
-    // The 4B orchestrator is excluded: with thinking on it burned a full
-    // 2048-token output budget on a trivial image transcription without
-    // terminating — the exact loop failure we are moving off of. The hard
-    // thinking belongs to the developer model, not the relay.
-    if (/qwen3/i.test(modelID) && !/qwen3\.5-4b/i.test(modelID)) {
-      // Qwen3.6 hybrid thinking (Qwen/Qwen3.6-35B-A3B model card): thinking is
-      // on by default, and preserve_thinking keeps earlier reasoning turns,
-      // which "greatly increases agentic capabilities". OVMS / vLLM /
-      // llama-server read these from chat_template_kwargs. Adapters that do
-      // not know the key drop it — in which case the local Qwen chat template,
-      // which defaults preserve_thinking to true, covers us anyway.
+    // Qwen3 chat templates default enable_thinking to ON, so "do not add the
+    // kwargs" is not "thinking off" — it is thinking on by default. Both sides
+    // must be explicit. Measured on the 4B: thinking on fixates (a trivial
+    // "hi" burned a full 32k-token output budget, ~21 min of generation);
+    // thinking off answers in seconds. The hard thinking belongs to the
+    // developer model, not the relay.
+    if (/qwen3/i.test(modelID)) {
+      const orchestrator = /qwen3\.5-4b/i.test(modelID)
       output.options = {
         ...(output.options ?? {}),
         chat_template_kwargs: {
           ...((output.options as any)?.chat_template_kwargs ?? {}),
-          enable_thinking: true,
-          preserve_thinking: true,
+          enable_thinking: !orchestrator,
+          // Qwen3.6 hybrid thinking (Qwen/Qwen3.6-35B-A3B model card):
+          // preserve_thinking keeps earlier reasoning turns, which "greatly
+          // increases agentic capabilities". Only meaningful when thinking is
+          // on; adapters that do not know the key drop it.
+          ...(orchestrator ? {} : { preserve_thinking: true }),
         },
       }
     }
