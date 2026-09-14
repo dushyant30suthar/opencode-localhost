@@ -112,24 +112,25 @@ const server = async () => ({
       await backend.start().catch(() => {})
     }
     const modelID = String(input?.model?.id ?? "")
-    // Qwen3 chat templates default enable_thinking to ON, so "do not add the
-    // kwargs" is not "thinking off" — it is thinking on by default. Both sides
-    // must be explicit. Measured on the 4B: thinking on fixates (a trivial
-    // "hi" burned a full 32k-token output budget, ~21 min of generation);
-    // thinking off answers in seconds. The hard thinking belongs to the
-    // developer model, not the relay.
-    if (/qwen3/i.test(modelID)) {
-      const orchestrator = /qwen3\.5-4b/i.test(modelID)
+    // Qwen3.5 chat templates default enable_thinking to ON, and that is the
+    // mode the model is trained in. Forcing it off appends an empty think
+    // block to the prompt, and the 4B leaks bare closing think tags out of
+    // that state (seen live in opencode, 2026-09-14). The orchestrator
+    // therefore runs with the template default — thinking on, no kwargs at
+    // all. The developer models get it explicitly, so an upstream template
+    // default change can never silently flip them.
+    if (/qwen3/i.test(modelID) && !/qwen3\.5-4b/i.test(modelID)) {
+      // Qwen3.6 hybrid thinking (Qwen/Qwen3.6-35B-A3B model card):
+      // preserve_thinking keeps earlier reasoning turns, which "greatly
+      // increases agentic capabilities". Adapters that do not know the key
+      // drop it — in which case the local Qwen chat template, which defaults
+      // preserve_thinking to true, covers us anyway.
       output.options = {
         ...(output.options ?? {}),
         chat_template_kwargs: {
           ...((output.options as any)?.chat_template_kwargs ?? {}),
-          enable_thinking: !orchestrator,
-          // Qwen3.6 hybrid thinking (Qwen/Qwen3.6-35B-A3B model card):
-          // preserve_thinking keeps earlier reasoning turns, which "greatly
-          // increases agentic capabilities". Only meaningful when thinking is
-          // on; adapters that do not know the key drop it.
-          ...(orchestrator ? {} : { preserve_thinking: true }),
+          enable_thinking: true,
+          preserve_thinking: true,
         },
       }
     }
