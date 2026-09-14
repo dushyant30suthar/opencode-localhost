@@ -104,6 +104,20 @@ function chosen(cfg: Server.ServerSettings, local: LocalModel[]): LocalModel | u
 }
 
 /**
+ * Whether the model directory carries a vision tower. The full VLM export
+ * does; a text-only export (language half without vision files) does not.
+ * Advertising this truthfully lets opencode send images where they work
+ * instead of stripping them everywhere.
+ */
+async function hasVision(dir: string): Promise<boolean> {
+  for (const file of ["openvino_vision_embeddings_model.xml", "openvino_vision_embeddings_merger_model.xml"]) {
+    const stat = await fs.stat(path.join(dir, file)).catch(() => undefined)
+    if (stat?.isFile()) return true
+  }
+  return false
+}
+
+/**
  * The ovms process holding `port`, found by scanning /proc.
  *
  * Needed because the pid file only covers servers *we* launched. A server
@@ -283,6 +297,7 @@ export function create(): Backend {
     const model = (served && local.find((entry) => entry.id === served)) || chosen(cfg, local)
     if (!model) return []
     const context = cfg.context
+    const vision = await hasVision(model.dir)
     return [
       {
         id: model.id,
@@ -292,6 +307,7 @@ export function create(): Backend {
         // half the window, capped, leaves room for a long plan without truncating
         output: Math.min(32_768, Math.max(4_096, Math.floor(context / 2))),
         sampling: cfg.sampling,
+        ...(vision ? { vision: true } : {}),
       },
     ]
   }
