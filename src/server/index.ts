@@ -111,6 +111,27 @@ const server = async () => ({
     } else if (status && status.state === "stopped") {
       await backend.start().catch(() => {})
     }
+    const modelID = String(input?.model?.id ?? "")
+    // The 4B orchestrator is excluded: with thinking on it burned a full
+    // 2048-token output budget on a trivial image transcription without
+    // terminating — the exact loop failure we are moving off of. The hard
+    // thinking belongs to the developer model, not the relay.
+    if (/qwen3/i.test(modelID) && !/qwen3\.5-4b/i.test(modelID)) {
+      // Qwen3.6 hybrid thinking (Qwen/Qwen3.6-35B-A3B model card): thinking is
+      // on by default, and preserve_thinking keeps earlier reasoning turns,
+      // which "greatly increases agentic capabilities". OVMS / vLLM /
+      // llama-server read these from chat_template_kwargs. Adapters that do
+      // not know the key drop it — in which case the local Qwen chat template,
+      // which defaults preserve_thinking to true, covers us anyway.
+      output.options = {
+        ...(output.options ?? {}),
+        chat_template_kwargs: {
+          ...((output.options as any)?.chat_template_kwargs ?? {}),
+          enable_thinking: true,
+          preserve_thinking: true,
+        },
+      }
+    }
     const values = sampling.get(`${providerID}/${input?.model?.id}`)
     if (!values) return
     // opencode names three of these directly and passes the rest through options
