@@ -492,7 +492,16 @@ export function create(): Backend {
         config: collapseHome(active || ""),
       }
       for (const key of Object.keys(args)) if (!args[key]) delete args[key]
-      const model: LoadedModel = { id: info.id, args: cfg.remote ? { host: cfg.remote } : args }
+      // Report the YAML's basename id, not info.id, when we know which file
+      // launched this process. The picker selects by basename, and several
+      // YAMLs can serve one checkpoint while differing in how they serve it
+      // (the -quality profile: same weights, FP16 KV, 144k). TabbyAPI only
+      // ever reports model_name — the checkpoint directory name — so keying
+      // the panel on info.id rendered every such profile under the plain
+      // name and there was no way to tell which one was actually up. A
+      // hand-started server has no declared file, so info.id is all there is.
+      const id = declared?.id ?? info.id
+      const model: LoadedModel = { id, args: cfg.remote ? { host: cfg.remote } : args }
       lastSeen = { model, at: Date.now() }
       return model
     }
@@ -515,8 +524,10 @@ export function create(): Backend {
     }
     // Streaming weights into VRAM: the server cannot describe itself yet, so
     // the YAML about to be served is the only source. Fields the file declares
-    // are real; the rest appear once /v1/model answers.
-    const name = declared?.served ?? (await configuredModelName(cfg)) ?? "model"
+    // are real; the rest appear once /v1/model answers. Same basename id as
+    // the loaded branch below — the panel keeps one identity for a model from
+    // launch through ready instead of renaming it mid-load.
+    const name = declared?.id ?? (await configuredModelName(cfg)) ?? "model"
     const pending: Record<string, string> = {
       engine: "exllamav3",
       context: String(declared?.context ?? cfg.context),
