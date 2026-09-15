@@ -1,4 +1,5 @@
 import { create as llamacpp } from "../server/llamacpp/index.ts"
+import { create as mlx } from "../server/mlx/index.ts"
 import { create as openvino } from "../server/openvino/index.ts"
 import { create as exl3 } from "../server/exl3/index.ts"
 import { create as vllm } from "../server/vllm/index.ts"
@@ -7,6 +8,7 @@ import * as LlamacppIni from "../server/llamacpp/server-ini.ts"
 import * as OpenvinoIni from "../server/openvino/server-ini.ts"
 import * as Exl3Ini from "../server/exl3/server-ini.ts"
 import * as VllmIni from "../server/vllm/server-ini.ts"
+import * as MlxIni from "../server/mlx/server-ini.ts"
 import * as ComfyuiIni from "../server/comfyui/server-ini.ts"
 import type { Backend } from "../server/backend.ts"
 
@@ -18,7 +20,7 @@ import type { Backend } from "../server/backend.ts"
  * step with the server half's list — a backend registered there but not here
  * serves models while the panel offers no way to start or stop it.
  */
-export const BACKENDS: Backend[] = [llamacpp(), openvino(), exl3(), vllm(), comfyui()]
+export const BACKENDS: Backend[] = [llamacpp(), mlx(), openvino(), exl3(), vllm(), comfyui()]
 
 export function backendById(id: string): Backend | undefined {
   return BACKENDS.find((backend) => backend.id === id)
@@ -50,6 +52,7 @@ export type BackendConfig = {
 
 export const CONFIGS: Record<string, BackendConfig> = {
   llamacpp: LlamacppIni,
+  mlx: MlxIni,
   openvino: OpenvinoIni,
   exl3: Exl3Ini,
   vllm: VllmIni,

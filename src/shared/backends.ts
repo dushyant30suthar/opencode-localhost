@@ -51,10 +51,10 @@ export const BACKENDS: BackendSpec[] = [
   {
     id: "mlx",
     name: "MLX",
-    binary: "mlx_lm.server",
-    install: "pip install mlx-lm",
+    binary: "mlx_vlm.server",
+    install: "uv venv --python 3.12 && uv pip install git+https://github.com/ml-explore/mlx-lm git+https://github.com/Blaizzy/mlx-vlm, then set bin to <venv>/bin/mlx_vlm.server",
     requires: { platform: "darwin", arch: "arm64" },
-    implemented: false,
+    implemented: true,
   },
   {
     id: "openvino",

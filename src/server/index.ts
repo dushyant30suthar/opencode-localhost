@@ -1,5 +1,6 @@
 import type { Backend, DiscoveredModel } from "./backend.ts"
 import { create as llamacpp } from "./llamacpp/index.ts"
+import { create as mlx } from "./mlx/index.ts"
 import { create as openvino } from "./openvino/index.ts"
 import { create as exl3 } from "./exl3/index.ts"
 import { create as vllm } from "./vllm/index.ts"
@@ -22,7 +23,7 @@ import { create as comfyui } from "./comfyui/index.ts"
 // comfyui is here for supervision only: it contributes no models, so register()
 // below skips it and it never reaches opencode's picker. It still belongs in
 // this list — status() is what lets the panel start and stop it.
-const BACKENDS: Backend[] = [llamacpp(), openvino(), exl3(), vllm(), comfyui()]
+const BACKENDS: Backend[] = [llamacpp(), mlx(), openvino(), exl3(), vllm(), comfyui()]
 
 /** Cached per process: discovery walks the filesystem and starts a server. */
 const sampling = new Map<string, Record<string, number>>()
