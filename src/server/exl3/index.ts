@@ -394,14 +394,14 @@ export function create(): Backend {
       }
     }
 
-    const served = await servedModelFrom(origin(), PROBE_TIMEOUT, cfg.apiKey)
+    const info = await modelInfo(origin(), PROBE_TIMEOUT, cfg.apiKey)
     // A remote that is not answering still advertises `model` from the ini —
     // the far end has no always-on router to ask, and a provider that vanishes
     // whenever the far server rests reads as "exl3 not acknowledged" on the
     // machine pointing at it.
-    const id = served ?? (cfg.remote ? cfg.model : await configuredModelName(cfg))
+    const id = info?.id ?? (cfg.remote ? cfg.model : await configuredModelName(cfg))
     if (!id) return []
-    return [describe(id, cfg.context, !!cfg.remote)]
+    return [describe(id, cfg.context, !!cfg.remote, info?.params?.use_vision === true)]
   }
 
   async function launch(cfg: Server.ServerSettings, yaml: string): Promise<ProviderStatus> {
